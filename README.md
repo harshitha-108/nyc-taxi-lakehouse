@@ -239,7 +239,7 @@ instead of Pandas so the same processing model can scale beyond this local month
 - [x] Phase 1 — Project foundation
 - [x] Phase 2 — NYC Taxi ingestion
 - [x] Phase 3 — Bronze layer
-- [ ] Phase 4 — Silver layer
+- [x] Phase 4 — Silver layer
 - [ ] Phase 5 — Gold layer
 - [ ] Phase 6 — Lakehouse/object storage
 - [ ] Phase 7 — Containerization improvements
@@ -251,6 +251,84 @@ instead of Pandas so the same processing model can scale beyond this local month
 - [ ] Phase 13 — CI/CD
 - [ ] Phase 14 — Performance/scalability
 - [ ] Phase 15 — Final documentation/interview preparation
+
+## Implementation Details
+
+### Phase 1 — Project Foundation
+
+Phase 1 established a reproducible, local-first engineering baseline: Python 3.11, a `src/`-based
+package, Docker Compose, Java 17, PySpark 3.5.3, dependency configuration, pytest, and Ruff. The
+Docker image was validated with a real local SparkSession smoke test. Configuration is kept outside
+source code through `.env.example`; the real `.env` is ignored by Git. The repository also includes
+the initial data-layer directory scaffold and Git/GitHub setup. The `src/` layout keeps reusable
+pipeline code separate from tests and scripts, while Docker makes the environment reproducible for
+another developer without a host Spark installation.
+
+### Phase 2 — NYC Taxi Ingestion
+
+The ingestion module downloads official NYC Taxi & Limousine Commission Yellow Taxi Parquet files for
+a requested year and month. The validated development example is Yellow Taxi 2024-01:
+`yellow_tripdata_2024-01.parquet` (49,961,641 bytes). It is stored at
+`data/raw/yellow/2024/01/`, with its lineage manifest under
+`data/raw/metadata/yellow/2024/01/`.
+
+Run one month with:
+
+```powershell
+docker compose run --rm pipeline python -m nyc_taxi_lakehouse.ingestion.nyc_taxi --year 2024 --month 1
+```
+
+The CLI constructs the official TLC URL, streams the download to a temporary `.part` file, validates
+non-zero size and the Parquet footer with PyArrow, then atomically promotes the completed file.
+Structured logging, HTTP/network error handling, and bounded retries make failures explicit. A valid
+existing file is revalidated and skipped, which was confirmed by a second real execution. Generated
+raw data and manifests are excluded from Git. Phase 2 had 9 passing automated tests.
+
+### Phase 3 — Bronze Layer
+
+Bronze creates a source-aligned Spark representation of each raw file: Raw Parquet → PySpark Bronze
+processor → source columns preserved plus technical lineage → partitioned Bronze Parquet. For Yellow
+Taxi 2024-01, the source had 2,964,624 rows, 19 columns, and 49,961,641 bytes. Bronze retained all
+2,964,624 rows and source columns, added five columns, and wrote one 61,639,367-byte Snappy Parquet
+part file in approximately 24 seconds.
+
+The technical fields are `_bronze_ingested_at` (the run timestamp), `_source_file` (source filename),
+`_source_taxi_type`, `_source_year`, and `_source_month`. Output uses
+`data/bronze/yellow/year=2024/month=01/`; month-level partitions keep independently processable
+periods small enough for partition pruning without over-partitioning. A temporary sibling write is
+read back before replacing only the target partition. Reprocessing January preserved the final count
+of 2,964,624 rows without creating duplicate data. Bronze intentionally does not clean business
+values; that is the responsibility of Silver. Phase 3 completed with 12 passing tests and Ruff.
+
+### Phase 4 — Silver Layer
+
+Silver standardizes Bronze columns for analytics, preserves all Bronze lineage, adds
+`_silver_processed_at`, and derives `trip_duration_minutes` and `pickup_date`. The actual TLC naming
+changes are `VendorID` → `vendor_id`, `RatecodeID` → `rate_code_id`, `PULocationID` →
+`pickup_location_id`, `DOLocationID` → `dropoff_location_id`, and `Airport_fee` → `airport_fee`.
+Monetary fields are represented as fixed-scale decimals to avoid floating-point presentation issues.
+
+The processor evaluates missing pickup/dropoff timestamps, invalid timestamp order, negative trip
+distance, negative fare amount, negative total amount, and missing/non-positive pickup or dropoff
+location IDs. Invalid records are retained in
+`data/quarantine/silver/yellow/year=2024/month=01/` with an array of `_quality_failure_reasons`;
+valid records are written to `data/silver/yellow/year=2024/month=01/`. The January 2024 run reconciled
+2,964,624 Bronze rows into 2,927,000 valid rows (98.7309%) and 37,624 rejected rows (1.2691%). Rule
+failure counts were 56 invalid timestamp orders, 37,448 negative fares, and 35,504 negative totals;
+all other implemented rule counts were zero. Counts can overlap because one quarantined record may
+have multiple reasons.
+
+Run Silver with:
+
+```powershell
+docker compose run --rm pipeline python -m nyc_taxi_lakehouse.silver.processor --taxi-type yellow --year 2024 --month 1
+```
+
+Both valid and quarantine partitions are written to temporary directories, validated by Spark
+read-back, and promoted together with rollback protection. A rerun produced the same counts and
+replaced only the January outputs, demonstrating partition-level idempotency. The final run produced
+one Silver part file (65,398,600 bytes) and one quarantine part file (897,649 bytes). Phase 4
+completed with 15 passing tests and Ruff.
 
 ## Production mapping (reference only)
 

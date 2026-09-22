@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 3 — Bronze Layer
+Phase 4 — Silver Layer
 
 ## Completed
 
@@ -20,13 +20,21 @@ Phase 3 — Bronze Layer
 - Source-aligned PySpark Bronze processor and CLI
 - Temporary-write, read-back validation, and partition-level replacement behavior
 - Spark Bronze integration tests using small local Parquet fixtures
+- PySpark Silver processor and CLI with standardized analytical column names and fixed-scale monetary
+  values
+- Valid Silver and quarantine outputs with technical lineage, row-level derived fields, and explicit
+  quality-failure reasons
+- Temporary paired writes, read-back validation, and partition-level replacement for Silver and
+  quarantine outputs
+- Spark Silver integration tests using small local Bronze fixtures
 
 ## Current Architecture
 
 One local Docker Compose `pipeline` service provides Python 3.11, Java 17, PySpark, and PyArrow. The
 pipeline can download official Yellow Taxi source Parquet files into local raw storage, produce lineage
-manifests, and create source-aligned Bronze Parquet partitions. Silver/Gold transformations, MinIO,
-Airflow, dbt, Superset, and dashboards are not implemented.
+manifests, create source-aligned Bronze Parquet partitions, and produce valid Silver and quarantined
+Silver partitions. Gold transformations, MinIO, Airflow, dbt, Superset, and dashboards are not
+implemented.
 
 ## Environment
 
@@ -49,6 +57,7 @@ docker compose run --rm pipeline pytest
 docker compose run --rm pipeline ruff check src tests
 docker compose run --rm pipeline python -m nyc_taxi_lakehouse.ingestion.nyc_taxi --year 2024 --month 1
 docker compose run --rm pipeline python -m nyc_taxi_lakehouse.bronze.processor --taxi-type yellow --year 2024 --month 1
+docker compose run --rm pipeline python -m nyc_taxi_lakehouse.silver.processor --taxi-type yellow --year 2024 --month 1
 ```
 
 ## Validation Completed
@@ -71,11 +80,27 @@ docker compose run --rm pipeline python -m nyc_taxi_lakehouse.bronze.processor -
   61,639,367 bytes, 2,964,624 rows, and 24 columns.
 - A repeated Bronze run replaced only the January target partition; it retained 1 part file and the
   same 2,964,624-row result. The final measured run took approximately 24 seconds.
+- Bronze January profiling found no null pickup/dropoff timestamps, 56 dropoffs before pickups, no
+  negative distances, 37,448 negative fares, 35,504 negative totals, and no missing/non-positive
+  location IDs. `passenger_count` was null for 140,162 rows, so it is retained rather than rejected.
+- Pickup timestamps ranged from `2002-12-31 22:59:39` to `2024-02-01 00:01:15`; dropoff timestamps
+  ranged from `2002-12-31 23:05:41` to `2024-02-02 13:56:52`. These out-of-period records are
+  preserved because Phase 4 does not impose an arbitrary timestamp-window rejection rule.
+- The Silver job processed the January Bronze partition into 2,927,000 valid rows and 37,624
+  quarantined rows, satisfying `2,964,624 = 2,927,000 + 37,624`.
+- The valid output is `data/silver/yellow/year=2024/month=01/` (1 Snappy Parquet file, 65,398,600
+  bytes, 27 columns). The quarantine output is
+  `data/quarantine/silver/yellow/year=2024/month=01/` (1 Snappy Parquet file, 897,649 bytes).
+- January Silver rule failures were: 56 `INVALID_TIMESTAMP_ORDER`, 37,448
+  `NEGATIVE_FARE_AMOUNT`, and 35,504 `NEGATIVE_TOTAL_AMOUNT`; the other five implemented rules had
+  zero failures. Counts may overlap for a record with multiple reasons.
+- A repeated Silver run replaced the January valid and quarantine partitions and produced the same
+  reconciliation counts. The final measured run took 69.61 seconds.
 
 ## Tests
 
-- `pytest`: 12 tests passed, including raw-to-Bronze Spark integration, source preservation, lineage,
-  and partition-level idempotency tests.
+- `pytest`: 15 tests passed, including raw-to-Bronze and Bronze-to-Silver Spark integration, source
+  preservation, lineage, quality reason, and partition-level idempotency tests.
 - `ruff check src tests`: passed.
 - Spark environment smoke test: passed.
 
@@ -102,7 +127,14 @@ are expected for this minimal local container and did not affect execution.
   to avoid accepting interrupted downloads.
 - Keep Bronze source-aligned: preserve TLC business data unchanged and add only technical lineage.
 - Use a validated temporary sibling directory before replacing exactly one Bronze year/month partition.
+- Standardize only at Silver, where canonical snake_case names and decimal money fields establish an
+  analytical contract without changing Bronze source representation.
+- Quarantine instead of silently dropping invalid rows; retain all applicable rule identifiers so
+  quality remediation and observability remain possible.
+- Keep zero-distance trips and nullable passenger counts because the January profile did not justify
+  rejecting them for this analytical contract.
+- Promote temporary Silver and quarantine partitions as a pair only after Spark read-back validation.
 
 ## Next Phase
 
-Phase 4 — Silver layer. This phase has **not** started.
+Phase 5 — Gold layer. This phase has **not** started.
