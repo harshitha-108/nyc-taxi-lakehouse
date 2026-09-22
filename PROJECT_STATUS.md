@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 6 — Taxi Zone Reference Data & Geographic Enrichment
+Phase 7 — Multi-Month Incremental Processing & Backfill/Replay
 
 ## Completed
 
@@ -38,6 +38,8 @@ Phase 6 — Taxi Zone Reference Data & Geographic Enrichment
 - Broadcast left-join enrichment and a new `pickup_zone_performance` Gold mart
 - Reference-match monitoring, aggregate reconciliation, and metric-consistency validation against the
   existing pickup-location mart
+- Stateful multi-month orchestration for ingestion through geographic enrichment, with atomic local
+  period/run state, incremental skip behavior, bootstrap adoption, and explicit stage replay
 
 ## Current Architecture
 
@@ -46,7 +48,8 @@ pipeline can download official Yellow Taxi source Parquet files into local raw s
 manifests, create source-aligned Bronze Parquet partitions, and produce valid Silver and quarantined
 Silver partitions. It also creates four analytics-ready Gold Parquet datasets from valid Silver data.
 Phase 6 adds an independent official Taxi Zone reference dataset and an enriched pickup-zone Gold mart.
-MinIO, Airflow, dbt, Superset, and dashboards are not implemented.
+The Phase 7 orchestrator controls existing stages and stores only operational state; MinIO, Airflow,
+dbt, Superset, and dashboards are not implemented.
 
 ## Environment
 
@@ -140,7 +143,7 @@ docker compose run --rm pipeline python -m nyc_taxi_lakehouse.gold.geographic --
 
 ## Tests
 
-- `pytest`: 26 tests passed, including raw-to-Bronze, Bronze-to-Silver, Silver-to-Gold, Taxi Zone
+- `pytest`: 33 tests passed, including raw-to-Bronze, Bronze-to-Silver, Silver-to-Gold, Taxi Zone
   reference validation, and geographic-enrichment Spark
   integration; Gold grain, metric, reconciliation, percentage, and partition-level idempotency tests.
 - `ruff check src tests`: passed.
@@ -191,7 +194,9 @@ are expected for this minimal local container and did not affect execution.
   unnecessary large shuffle; monitor unmatched keys explicitly.
 - Preserve the Phase 5 Gold contract by adding a separate enriched mart and reconcile its metrics to
   the existing location-performance dataset.
+- Use explicit period state and artifact validation to make incremental runs skip only complete
+  partitions; retain replay as an intentional operator action rather than implicit recovery.
 
 ## Next Phase
 
-Phase 7 — Multi-Month Incremental Processing & Backfill/Replay. This phase has **not** started.
+Phase 8 — Schema Evolution & Contract Detection. This phase has **not** started.

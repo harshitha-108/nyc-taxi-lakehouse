@@ -17,12 +17,28 @@ documentation for functionality that has been implemented and validated.
 ## Architecture
 
 ```mermaid
-flowchart LR
-    TLC[NYC TLC trip records] --> ING[Python ingestion]
-    ING --> RAW[Local raw Parquet]
-    RAW --> BRONZE[Bronze Parquet]
-    BRONZE -. planned .-> SILVER[Silver Parquet]
-    SILVER -. planned .-> GOLD[Gold analytics]
+flowchart TB
+    TLC["NYC TLC Yellow Taxi<br/>Trip Records"] --> ING["Python Ingestion<br/>Incremental + Idempotent"]
+    ING --> RAW["Raw Layer<br/>Source-preserved Parquet"]
+    RAW --> BRONZE["Bronze Layer<br/>Spark + Technical Lineage"]
+    BRONZE --> SILVER["Silver Layer<br/>Standardization + Quality Rules"]
+    SILVER -->|Valid| VALID["Valid Silver"]
+    SILVER -->|Rejected| QUARANTINE["Quarantine<br/>Rejected + Failure Reasons"]
+    VALID --> GOLD["Gold Analytics<br/>Analytics-ready Aggregates"]
+    GOLD --> DAILY["Daily Trip Metrics"]
+    GOLD --> HOURLY["Hourly Demand"]
+    GOLD --> LOCATION["Pickup Location Performance"]
+    GOLD --> PAYMENT["Payment Type Summary"]
+    ZONES["Official TLC<br/>Taxi Zone Lookup"] --> REF["Reference Data Ingestion"] --> DIM["Validated Taxi Zone Dimension"]
+    LOCATION --> GEO["Geographic Enrichment"]
+    DIM --> GEO
+    GEO --> ZONEGOLD["Pickup Zone Performance"]
+    ORCH["Multi-Month Pipeline Orchestrator<br/>Incremental • Backfill • Replay • Retry"]
+    ORCH -. controls .-> ING
+    ORCH -. controls .-> BRONZE
+    ORCH -. controls .-> SILVER
+    ORCH -. controls .-> GOLD
+    ORCH -. controls .-> GEO
 ```
 
 The eventual local platform may add MinIO, Airflow, dbt Core, an analytics database, Superset,
@@ -242,7 +258,7 @@ instead of Pandas so the same processing model can scale beyond this local month
 - [x] Phase 4 — Silver layer
 - [x] Phase 5 — Gold layer
 - [x] Phase 6 — Lakehouse/object storage
-- [ ] Phase 7 — Containerization improvements
+- [x] Phase 7 — Containerization improvements
 - [ ] Phase 8 — Airflow orchestration
 - [ ] Phase 9 — dbt transformations
 - [ ] Phase 10 — Data quality and observability
@@ -400,6 +416,39 @@ docker compose run --rm pipeline python -m nyc_taxi_lakehouse.gold.geographic --
 ```
 
 Phase 6 completed with 26 passing tests and Ruff.
+
+### Phase 7 — Multi-Month Incremental Processing & Backfill/Replay
+
+Phase 7 adds a local, stateful orchestrator for independent monthly periods. It coordinates the
+existing ingestion, Bronze, Silver, Gold, and geographic-enrichment jobs without becoming a data store.
+Period state and run history are written atomically under ignored `data/state/`, recording the requested
+period, mode, action, stage statuses, metrics, and completion status. A valid pre-existing January
+partition was adopted as `BOOTSTRAPPED`; February through June were processed normally.
+
+Run an incremental range with:
+
+```powershell
+docker compose run --rm pipeline python -m nyc_taxi_lakehouse.orchestration.pipeline --taxi-type yellow --start 2024-01 --end 2024-06 --mode incremental --from-stage ingestion
+```
+
+The January–June validation processed 20,332,093 Bronze rows into 20,015,099 valid Silver rows and
+316,994 quarantined rows. Every month reconciled `Bronze = valid Silver + quarantine`; daily and
+pickup-zone Gold trip counts also reconciled to valid Silver, with 100% Taxi Zone matches. An identical
+incremental rerun completed in 4.719 seconds with all six periods skipped and no monthly Spark stages
+or taxi-file downloads.
+
+Replay is explicit and dependency-aware. For example, this reprocesses March from Silver while first
+validating, but not rewriting, Raw and Bronze:
+
+```powershell
+docker compose run --rm pipeline python -m nyc_taxi_lakehouse.orchestration.pipeline --taxi-type yellow --start 2024-03 --end 2024-03 --mode replay --from-stage silver
+```
+
+The controlled March replay retained byte-identical Raw and Bronze files, then regenerated Silver,
+all four Gold marts, and geographic enrichment. It finished in 177.51 seconds with 3,523,905 valid
+rows, 58,723 quarantined rows, and a 100% geographic match rate. The external execution tool returned
+partial output during the original February processing while the Docker container continued; the
+pipeline itself subsequently completed successfully.
 
 ## Production mapping (reference only)
 
