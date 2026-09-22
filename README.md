@@ -241,7 +241,7 @@ instead of Pandas so the same processing model can scale beyond this local month
 - [x] Phase 3 — Bronze layer
 - [x] Phase 4 — Silver layer
 - [x] Phase 5 — Gold layer
-- [ ] Phase 6 — Lakehouse/object storage
+- [x] Phase 6 — Lakehouse/object storage
 - [ ] Phase 7 — Containerization improvements
 - [ ] Phase 8 — Airflow orchestration
 - [ ] Phase 9 — dbt transformations
@@ -362,6 +362,44 @@ docker compose run --rm pipeline python -m nyc_taxi_lakehouse.gold.processor --t
 ```
 
 Phase 5 completed with 18 passing tests and Ruff.
+
+### Phase 6 — Taxi Zone Reference Data & Geographic Enrichment
+
+Phase 6 adds the official TLC Taxi Zone Lookup as a separately managed reference dataset, enabling
+location analytics to use `location_id`, `borough`, `zone`, and `service_zone` rather than only numeric
+IDs. It is downloaded from the TLC-hosted
+`https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv` endpoint into ignored local runtime
+storage at `data/reference/taxi_zones/taxi_zone_lookup.csv`. A generated manifest captures source URL,
+retrieval time, local path, file size, and validation outcome.
+
+The lookup is validated as readable CSV with required columns, integer/non-null/unique `LocationID`, and
+non-blank Borough and Zone values before it is used. The January validation downloaded 12,331 bytes and
+found 265 rows, 265 unique IDs, zero duplicates, and zero null/blank counts for LocationID, Borough,
+Zone, and service_zone. Run its independent ingestion with:
+
+```powershell
+docker compose run --rm pipeline python -m nyc_taxi_lakehouse.reference.taxi_zones
+```
+
+`pickup_zone_performance` is a new Gold mart that enriches—without replacing—the existing
+`pickup_location_performance` contract. Its grain remains one row per `pickup_location_id`, with
+borough, zone, and service_zone appended. The small 265-row dimension is broadcast and left-joined to
+the 260-row location mart, avoiding a fact-side shuffle while preserving unmatched keys as null
+geography. The job records matched/unmatched IDs and their affected trip counts rather than fabricating
+an “Unknown” geography.
+
+For Yellow Taxi 2024-01, all 260 processed location IDs matched (100%), no trips were affected by
+unmatched keys, and the mart reconciled to all 2,927,000 valid Silver trips and the existing location
+mart. It contains 260 rows, 14 columns, and one 18,362-byte Snappy Parquet part file at
+`data/gold/pickup_zone_performance/yellow/year=2024/month=01/`. Location ID 161 enriches to Manhattan,
+Midtown Center, Yellow Zone, with 141,742 trips. The first run took 16.37 seconds; a rerun safely
+replaced only January with the same results. Run enrichment with:
+
+```powershell
+docker compose run --rm pipeline python -m nyc_taxi_lakehouse.gold.geographic --taxi-type yellow --year 2024 --month 1
+```
+
+Phase 6 completed with 26 passing tests and Ruff.
 
 ## Production mapping (reference only)
 

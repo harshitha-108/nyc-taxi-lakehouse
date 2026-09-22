@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 5 — Gold Analytics Layer
+Phase 6 — Taxi Zone Reference Data & Geographic Enrichment
 
 ## Completed
 
@@ -33,6 +33,11 @@ Phase 5 — Gold Analytics Layer
 - Temporary multi-dataset writes, Spark read-back validation, and coordinated partition replacement
 - Synthetic Gold unit and integration coverage for metrics, grains, reconciliation, percentages, and
   partition-level idempotency
+- Official TLC Taxi Zone Lookup ingestion with CSV/key validation, safe partial-file handling, runtime
+  lineage manifests, and idempotent local reuse
+- Broadcast left-join enrichment and a new `pickup_zone_performance` Gold mart
+- Reference-match monitoring, aggregate reconciliation, and metric-consistency validation against the
+  existing pickup-location mart
 
 ## Current Architecture
 
@@ -40,6 +45,7 @@ One local Docker Compose `pipeline` service provides Python 3.11, Java 17, PySpa
 pipeline can download official Yellow Taxi source Parquet files into local raw storage, produce lineage
 manifests, create source-aligned Bronze Parquet partitions, and produce valid Silver and quarantined
 Silver partitions. It also creates four analytics-ready Gold Parquet datasets from valid Silver data.
+Phase 6 adds an independent official Taxi Zone reference dataset and an enriched pickup-zone Gold mart.
 MinIO, Airflow, dbt, Superset, and dashboards are not implemented.
 
 ## Environment
@@ -65,6 +71,8 @@ docker compose run --rm pipeline python -m nyc_taxi_lakehouse.ingestion.nyc_taxi
 docker compose run --rm pipeline python -m nyc_taxi_lakehouse.bronze.processor --taxi-type yellow --year 2024 --month 1
 docker compose run --rm pipeline python -m nyc_taxi_lakehouse.silver.processor --taxi-type yellow --year 2024 --month 1
 docker compose run --rm pipeline python -m nyc_taxi_lakehouse.gold.processor --taxi-type yellow --year 2024 --month 1
+docker compose run --rm pipeline python -m nyc_taxi_lakehouse.reference.taxi_zones
+docker compose run --rm pipeline python -m nyc_taxi_lakehouse.gold.geographic --taxi-type yellow --year 2024 --month 1
 ```
 
 ## Validation Completed
@@ -117,10 +125,23 @@ docker compose run --rm pipeline python -m nyc_taxi_lakehouse.gold.processor --t
   15.6586 minutes.
 - The first Gold run took 49.17 seconds. A second run took 71.01 seconds and safely replaced all four
   January output partitions with identical row counts and reconciliations.
+- The official TLC Taxi Zone Lookup was downloaded from
+  `https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv` to
+  `data/reference/taxi_zones/taxi_zone_lookup.csv`. It is 12,331 bytes with 265 rows and 265 unique
+  LocationIDs; duplicate, null/invalid LocationID, and blank Borough/Zone/service_zone counts were all
+  zero.
+- The enriched `pickup_zone_performance` mart has 260 rows, 14 columns, one 18,362-byte Snappy Parquet
+  file, and is located at `data/gold/pickup_zone_performance/yellow/year=2024/month=01/`. A broadcast
+  left join matched all 260 distinct source IDs (100%); no unmatched IDs or trips were affected.
+- The mart reconciled to all 2,927,000 valid Silver trips and the existing pickup-location mart. Core
+  metrics had zero differences by `pickup_location_id`. Location 161 is Manhattan / Midtown Center /
+  Yellow Zone with 141,742 trips. The first run took 16.37 seconds; the idempotent rerun took 16.59
+  seconds.
 
 ## Tests
 
-- `pytest`: 18 tests passed, including raw-to-Bronze, Bronze-to-Silver, and Silver-to-Gold Spark
+- `pytest`: 26 tests passed, including raw-to-Bronze, Bronze-to-Silver, Silver-to-Gold, Taxi Zone
+  reference validation, and geographic-enrichment Spark
   integration; Gold grain, metric, reconciliation, percentage, and partition-level idempotency tests.
 - `ruff check src tests`: passed.
 - Spark environment smoke test: passed.
@@ -164,7 +185,13 @@ are expected for this minimal local container and did not affect execution.
 - Add period-level Gold lineage rather than fabricating a row-level source filename for aggregates.
 - Write and validate all four Gold partitions before promoting them together, preserving a rollback
   path if one mart fails.
+- Keep slowly changing reference data outside monthly taxi fact partitions and validate its business key
+  before use.
+- Broadcast the small Taxi Zone dimension and left-join it to preserve fact rows while avoiding an
+  unnecessary large shuffle; monitor unmatched keys explicitly.
+- Preserve the Phase 5 Gold contract by adding a separate enriched mart and reconcile its metrics to
+  the existing location-performance dataset.
 
 ## Next Phase
 
-Phase 6 — Lakehouse/Object Storage. This phase has **not** started.
+Phase 7 — Multi-Month Incremental Processing & Backfill/Replay. This phase has **not** started.
