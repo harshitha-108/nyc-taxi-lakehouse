@@ -7,9 +7,9 @@ paid cloud services.
 
 ## Project overview
 
-The implemented system currently downloads one official TLC Yellow Taxi Parquet file into a local raw
-layer. Future phases will add source-aligned Bronze storage, cleaned Silver data, and Gold analytics;
-those layers are not implemented yet.
+The implemented system downloads official TLC Yellow Taxi Parquet data into a local raw layer and
+creates a source-aligned Bronze Parquet partition. Future phases will add cleaned Silver data and Gold
+analytics; those layers are not implemented yet.
 
 `PROJECT_STATUS.md` records the active development state. This README is cumulative technical
 documentation for functionality that has been implemented and validated.
@@ -20,9 +20,8 @@ documentation for functionality that has been implemented and validated.
 flowchart LR
     TLC[NYC TLC trip records] --> ING[Python ingestion]
     ING --> RAW[Local raw Parquet]
-    RAW -. planned .-> BRONZE[Bronze Parquet]
-    BRONZE -. planned .-> SPARK[PySpark]
-    SPARK -. planned .-> SILVER[Silver Parquet]
+    RAW --> BRONZE[Bronze Parquet]
+    BRONZE -. planned .-> SILVER[Silver Parquet]
     SILVER -. planned .-> GOLD[Gold analytics]
 ```
 
@@ -37,7 +36,7 @@ reliable.
 | Python 3.11 | Ingestion package and CLI |
 | Docker Compose | Reproducible local development environment |
 | Java 17 | PySpark runtime dependency |
-| PySpark 3.5.3 | Validated locally; planned processing engine |
+| PySpark 3.5.3 | Local Bronze processing engine |
 | PyArrow 18.1.0 | Lightweight Parquet metadata validation |
 | pytest and Ruff | Automated tests and linting |
 | Git and GitHub | Versioned, reviewable project history |
@@ -47,6 +46,7 @@ reliable.
 ```text
 src/nyc_taxi_lakehouse/  Reusable Python package
 ├── ingestion/           Official TLC raw-data ingestion
+├── bronze/              Source-aligned Spark Bronze processing
 configs/                 Versioned, non-secret configuration
 data/                    Local runtime data; generated content is ignored
 tests/                   Unit and integration tests
@@ -151,6 +151,78 @@ Generated raw Parquet files, manifests, partial files, logs, Spark temporary out
 virtual environments, and `.env` are excluded from Git. The repository contains only directory
 placeholders under `data/`.
 
+## Completed: Bronze data layer
+
+### Purpose and source preservation
+
+The Bronze job reads the successful raw source file with PySpark and preserves every source business
+column, value, and Spark-inferred type. It deliberately performs no business cleaning, deduplication,
+timestamp repair, null handling, or quality-based rejection; those responsibilities begin in Silver.
+
+The validated `2024-01` Yellow Taxi source contains 2,964,624 rows and 19 columns:
+
+```text
+VendorID, tpep_pickup_datetime, tpep_dropoff_datetime, passenger_count,
+trip_distance, RatecodeID, store_and_fwd_flag, PULocationID, DOLocationID,
+payment_type, fare_amount, extra, mta_tax, tip_amount, tolls_amount,
+improvement_surcharge, total_amount, congestion_surcharge, Airport_fee
+```
+
+### Bronze layout and lineage
+
+Run the Bronze job for one raw source period with:
+
+```powershell
+docker compose run --rm pipeline python -m nyc_taxi_lakehouse.bronze.processor --taxi-type yellow --year 2024 --month 1
+```
+
+The output uses a Hive-style, month-granular layout:
+
+```text
+data/bronze/yellow/year=2024/month=01/
+└── part-*.snappy.parquet
+```
+
+Year/month directories allow later partition-aware reads while avoiding high-cardinality partitions such
+as trip IDs or pickup timestamps. The current approximately 50 MB development input is coalesced to one
+Parquet part file to avoid a local small-file fan-out; this policy can be tuned after benchmarking at a
+larger scale.
+
+Bronze adds five technical lineage columns, separate from TLC business fields:
+
+- `_bronze_ingested_at` — one UTC timestamp shared by the processing run
+- `_source_file` — source Parquet filename
+- `_source_taxi_type`
+- `_source_year`
+- `_source_month`
+
+### Idempotency and safe writes
+
+The job writes Spark output to a generated temporary sibling directory, reads it back, and validates
+row preservation, source columns, lineage columns, and lineage values. Only after validation succeeds
+does it replace the requested `year/month` target partition. If promotion fails, a prior target is kept
+as a rollback path. A rerun replaces only the same year/month partition rather than appending duplicate
+rows or touching unrelated months.
+
+### Validated development example
+
+Bronze was run against the existing Yellow Taxi `2024-01` raw file:
+
+- Source: 49,961,641 bytes, 2,964,624 rows, 19 columns
+- Bronze target: `data/bronze/yellow/year=2024/month=01/`
+- Bronze result: 2,964,624 rows, 24 columns, 5 technical columns
+- Parquet payload: 61,639,367 bytes in 1 part file
+- Final validation run: approximately 24 seconds
+- Idempotency rerun: retained one `month=01` partition and one part file; row count stayed 2,964,624
+
+### Spark design notes
+
+Spark transformations such as adding lineage columns are lazy; actions such as `count()` and writing
+Parquet trigger execution. This job uses counts intentionally for operational validation and never
+collects the source dataset to the driver. Spark DataFrame partitions are execution units, while the
+`year=.../month=...` directories are data-layout partitions used for future pruning. PySpark is used
+instead of Pandas so the same processing model can scale beyond this local monthly source.
+
 ## Engineering decisions
 
 - **Parquet over CSV:** columnar storage supports efficient later reads through column and predicate
@@ -166,7 +238,7 @@ placeholders under `data/`.
 
 - [x] Phase 1 — Project foundation
 - [x] Phase 2 — NYC Taxi ingestion
-- [ ] Phase 3 — Bronze layer
+- [x] Phase 3 — Bronze layer
 - [ ] Phase 4 — Silver layer
 - [ ] Phase 5 — Gold layer
 - [ ] Phase 6 — Lakehouse/object storage

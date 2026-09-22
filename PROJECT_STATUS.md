@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 2 — NYC Taxi Ingestion
+Phase 3 — Bronze Layer
 
 ## Completed
 
@@ -17,13 +17,16 @@ Phase 2 — NYC Taxi Ingestion
 - Atomic `.part` download behavior, bounded retries, Parquet footer validation, and error handling
 - Generated raw-data lineage manifests
 - Deterministic mocked ingestion tests and one official TLC integration download
+- Source-aligned PySpark Bronze processor and CLI
+- Temporary-write, read-back validation, and partition-level replacement behavior
+- Spark Bronze integration tests using small local Parquet fixtures
 
 ## Current Architecture
 
 One local Docker Compose `pipeline` service provides Python 3.11, Java 17, PySpark, and PyArrow. The
-pipeline can download official Yellow Taxi source Parquet files into local raw storage and produce
-lineage manifests. Bronze/Silver/Gold transformations, MinIO, Airflow, dbt, Superset, and dashboards
-are not implemented.
+pipeline can download official Yellow Taxi source Parquet files into local raw storage, produce lineage
+manifests, and create source-aligned Bronze Parquet partitions. Silver/Gold transformations, MinIO,
+Airflow, dbt, Superset, and dashboards are not implemented.
 
 ## Environment
 
@@ -45,6 +48,7 @@ docker compose run --rm pipeline python --version
 docker compose run --rm pipeline pytest
 docker compose run --rm pipeline ruff check src tests
 docker compose run --rm pipeline python -m nyc_taxi_lakehouse.ingestion.nyc_taxi --year 2024 --month 1
+docker compose run --rm pipeline python -m nyc_taxi_lakehouse.bronze.processor --taxi-type yellow --year 2024 --month 1
 ```
 
 ## Validation Completed
@@ -61,11 +65,17 @@ docker compose run --rm pipeline python -m nyc_taxi_lakehouse.ingestion.nyc_taxi
 - The downloaded file was 49,961,641 bytes. Its generated manifest is under
   `data/raw/metadata/yellow/2024/01/`.
 - The same CLI command was run again and skipped the valid existing file without a re-download.
+- The Bronze job processed the existing Yellow Taxi January 2024 raw file, preserving 2,964,624 rows
+  and all 19 source columns while adding 5 technical lineage columns.
+- The Bronze output is `data/bronze/yellow/year=2024/month=01/`: 1 Snappy Parquet file totaling
+  61,639,367 bytes, 2,964,624 rows, and 24 columns.
+- A repeated Bronze run replaced only the January target partition; it retained 1 part file and the
+  same 2,964,624-row result. The final measured run took approximately 24 seconds.
 
 ## Tests
 
-- `pytest`: 9 tests passed, including mocked download, skip, force, cleanup, validation, and manifest
-  behavior.
+- `pytest`: 12 tests passed, including raw-to-Bronze Spark integration, source preservation, lineage,
+  and partition-level idempotency tests.
 - `ruff check src tests`: passed.
 - Spark environment smoke test: passed.
 
@@ -90,7 +100,9 @@ are expected for this minimal local container and did not affect execution.
   separate from later Spark transformations.
 - Make reruns idempotent by skipping an existing valid file; use atomic promotion from `.part` files
   to avoid accepting interrupted downloads.
+- Keep Bronze source-aligned: preserve TLC business data unchanged and add only technical lineage.
+- Use a validated temporary sibling directory before replacing exactly one Bronze year/month partition.
 
 ## Next Phase
 
-Phase 3 — Bronze layer. This phase has **not** started.
+Phase 4 — Silver layer. This phase has **not** started.
