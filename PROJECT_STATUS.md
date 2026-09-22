@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 7 — Multi-Month Incremental Processing & Backfill/Replay
+Phase 8 — Schema Evolution & Data Contracts (PASS)
 
 ## Completed
 
@@ -40,6 +40,9 @@ Phase 7 — Multi-Month Incremental Processing & Backfill/Replay
   existing pickup-location mart
 - Stateful multi-month orchestration for ingestion through geographic enrichment, with atomic local
   period/run state, incremental skip behavior, bootstrap adoption, and explicit stage replay
+- Yellow Taxi source contract v1 and metadata-only PyArrow schema validation before Bronze rebuilds
+- Deterministic logical-schema fingerprints, compatibility decisions, and atomic runtime audit reports
+- Synthetic schema-evolution and orchestration-gate regression tests
 
 ## Current Architecture
 
@@ -48,8 +51,10 @@ pipeline can download official Yellow Taxi source Parquet files into local raw s
 manifests, create source-aligned Bronze Parquet partitions, and produce valid Silver and quarantined
 Silver partitions. It also creates four analytics-ready Gold Parquet datasets from valid Silver data.
 Phase 6 adds an independent official Taxi Zone reference dataset and an enriched pickup-zone Gold mart.
-The Phase 7 orchestrator controls existing stages and stores only operational state; MinIO, Airflow,
-dbt, Superset, and dashboards are not implemented.
+The orchestrator also validates the Raw schema against the committed Yellow Taxi contract before any
+Bronze rebuild. Audit reports are runtime state, not business data. Historical successful Phase 7
+periods remain readable and skip processing. MinIO, Airflow, dbt, Superset, and dashboards are not
+implemented.
 
 ## Environment
 
@@ -76,6 +81,7 @@ docker compose run --rm pipeline python -m nyc_taxi_lakehouse.silver.processor -
 docker compose run --rm pipeline python -m nyc_taxi_lakehouse.gold.processor --taxi-type yellow --year 2024 --month 1
 docker compose run --rm pipeline python -m nyc_taxi_lakehouse.reference.taxi_zones
 docker compose run --rm pipeline python -m nyc_taxi_lakehouse.gold.geographic --taxi-type yellow --year 2024 --month 1
+docker compose run --rm pipeline python -m nyc_taxi_lakehouse.schema.validator --taxi-type yellow --start 2024-01 --end 2024-06
 ```
 
 ## Validation Completed
@@ -140,10 +146,25 @@ docker compose run --rm pipeline python -m nyc_taxi_lakehouse.gold.geographic --
   metrics had zero differences by `pickup_location_id`. Location 161 is Manhattan / Midtown Center /
   Yellow Zone with 141,742 trips. The first run took 16.37 seconds; the idempotent rerun took 16.59
   seconds.
+- January–June 2024 Raw schemas all matched the 19-field Yellow Taxi v1 contract. Every month had the
+  same logical SHA-256 fingerprint:
+  `bb50ef4789e8c8308c722cc37849a2b7a0d7e46869a01909b69db4c7e3714ff7`.
+  All six checks were `COMPATIBLE` / `PASS` with zero changes; no real schema evolution was observed.
+- Final per-period metadata validation times were 0.038669, 0.037121, 0.037774, 0.032761, 0.037697,
+  and 0.045336 seconds for January through June respectively. Six corresponding JSON reports under
+  `data/state/schema/yellow/2024/` were verified and are ignored by Git.
+- Breaking schema tests blocked Bronze and all downstream stages and recorded a schema-validation
+  failure at both period and run level. Compatible added-column, replay-order, backfill-order, legacy
+  state, January bootstrap, and incremental skip tests passed.
+- Schema compatibility levels are `COMPATIBLE`, `WARNING`, and `BREAKING`; severity is preserved as
+  `BREAKING > WARNING > COMPATIBLE` when multiple changes occur. Synthetic tests cover malformed
+  contracts and show that an added nullable field can proceed through the orchestration gate.
+- The final metadata-only audit caused zero size or modification-time changes among 210 existing Raw,
+  Bronze, Silver, quarantine, and Gold files inspected.
 
 ## Tests
 
-- `pytest`: 33 tests passed, including raw-to-Bronze, Bronze-to-Silver, Silver-to-Gold, Taxi Zone
+- `pytest`: 52 tests passed, including raw-to-Bronze, Bronze-to-Silver, Silver-to-Gold, Taxi Zone
   reference validation, and geographic-enrichment Spark
   integration; Gold grain, metric, reconciliation, percentage, and partition-level idempotency tests.
 - `ruff check src tests`: passed.
@@ -151,8 +172,10 @@ docker compose run --rm pipeline python -m nyc_taxi_lakehouse.gold.geographic --
 
 ## Known Issues
 
-None. Spark's missing `ps` utility and native Hadoop library warnings during the Phase 1 smoke test
-are expected for this minimal local container and did not affect execution.
+The README roadmap retains historical placeholder labels for Phases 6–7 and a planned Phase 9 label;
+the implementation-detail sections describe the actual completed work. Airflow and object storage are
+not implemented. Spark's missing `ps` utility and native Hadoop library warnings in this minimal local
+container did not affect execution.
 
 ## Architecture Decisions
 
@@ -196,7 +219,11 @@ are expected for this minimal local container and did not affect execution.
   the existing location-performance dataset.
 - Use explicit period state and artifact validation to make incremental runs skip only complete
   partitions; retain replay as an intentional operator action rather than implicit recovery.
+- Keep the expected source schema in a version-controlled contract; use metadata-only inspection and
+  an order-independent fingerprint to detect structural changes before Bronze rebuilds.
+- Preserve historical completed-period state without rewriting it when adding the schema-validation
+  stage. Keep runtime audit records separate from the contract and ignored by Git.
 
 ## Next Phase
 
-Phase 8 — Schema Evolution & Contract Detection. This phase has **not** started.
+Phase 9 — MinIO + Apache Iceberg Lakehouse Storage. This phase has **not** started.

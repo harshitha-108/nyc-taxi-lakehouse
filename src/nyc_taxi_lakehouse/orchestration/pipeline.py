@@ -38,6 +38,8 @@ from nyc_taxi_lakehouse.reference.taxi_zones import (
     taxi_zone_csv_path,
     validate_taxi_zone_csv,
 )
+from nyc_taxi_lakehouse.schema.validator import Compatibility
+from nyc_taxi_lakehouse.schema.validator import validate_and_report as validate_schema
 from nyc_taxi_lakehouse.silver.processor import (
     SilverRequest,
     bronze_partition_path,
@@ -47,7 +49,7 @@ from nyc_taxi_lakehouse.silver.processor import (
 )
 
 LOGGER = logging.getLogger(__name__)
-STAGES = ("ingestion", "bronze", "silver", "gold", "geographic")
+STAGES = ("ingestion", "schema_validation", "bronze", "silver", "gold", "geographic")
 STAGE_INDEX = {stage: index for index, stage in enumerate(STAGES)}
 
 
@@ -204,6 +206,19 @@ def run_period(
             validate_parquet(raw_data_path(request, paths.raw_dir))
             state.stages["ingestion"] = {"status": "SKIPPED"}
 
+        if STAGE_INDEX[from_stage] <= STAGE_INDEX["bronze"]:
+            schema_result = validate_schema(
+                raw_data_path(request, paths.raw_dir), period, taxi_type, paths.state_dir
+            )
+            if schema_result["compatibility"] == Compatibility.BREAKING:
+                state.stages["schema_validation"] = {"status": "FAILED", "metrics": schema_result}
+                raise PipelineError(
+                    f"Breaking schema contract for {period.identifier}: {schema_result['changes']}"
+                )
+            state.stages["schema_validation"] = {"status": "SUCCESS", "metrics": schema_result}
+        else:
+            state.stages["schema_validation"] = {"status": "SKIPPED"}
+
         spark = create_spark_session("nyc-taxi-multi-month")
         stage_start = time.monotonic()
         if STAGE_INDEX[from_stage] <= STAGE_INDEX["bronze"]:
@@ -276,9 +291,11 @@ def run_period(
         )
     except Exception as exc:
         state.status, state.completed_at, state.metrics = "FAILED", StateStore.now(), metrics
-        state.stages[
-            next(stage for stage in STAGES if state.stages[stage]["status"] == "PENDING")
-        ] = {"status": "FAILED", "error": str(exc)}
+        pending = next(
+            (stage for stage in STAGES if state.stages[stage]["status"] == "PENDING"), None
+        )
+        if pending and not any(stage.get("status") == "FAILED" for stage in state.stages.values()):
+            state.stages[pending] = {"status": "FAILED", "error": str(exc)}
         store.save_period(state)
         raise PipelineError(f"Period {period.identifier} failed: {exc}") from exc
     finally:

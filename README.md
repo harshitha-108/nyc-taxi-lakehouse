@@ -259,7 +259,7 @@ instead of Pandas so the same processing model can scale beyond this local month
 - [x] Phase 5 — Gold layer
 - [x] Phase 6 — Lakehouse/object storage
 - [x] Phase 7 — Containerization improvements
-- [ ] Phase 8 — Airflow orchestration
+- [x] Phase 8 — Schema Evolution & Data Contracts
 - [ ] Phase 9 — dbt transformations
 - [ ] Phase 10 — Data quality and observability
 - [ ] Phase 11 — Analytics database and dashboard
@@ -449,6 +449,51 @@ all four Gold marts, and geographic enrichment. It finished in 177.51 seconds wi
 rows, 58,723 quarantined rows, and a 100% geographic match rate. The external execution tool returned
 partial output during the original February processing while the Docker container continued; the
 pipeline itself subsequently completed successfully.
+
+### Phase 8 — Schema Evolution & Data Contracts
+
+The version-controlled Yellow Taxi v1 contract describes the 19 source columns observed in Raw
+Parquet. `required` means a column must exist; `nullable` describes whether its source schema permits
+null values. All 19 observed fields are physically nullable, including fields required to exist.
+PyArrow reads only Parquet metadata for inspection, so schema checks do not scan trip rows.
+
+The validator compares added, removed, type-changed, and nullability-changed fields against the
+committed contract. It hashes a canonical logical schema with SHA-256; physical column order, period,
+file path, and validation time do not affect the fingerprint. Compatibility uses `COMPATIBLE`,
+`WARNING`, and `BREAKING`, with `BREAKING` taking precedence when several changes occur. A compatible
+new nullable field can proceed; a missing required field or changed required type blocks Bronze and
+downstream processing. Synthetic tests cover these cases, both nullability directions, field order,
+and simultaneous changes.
+
+The orchestrator validates Raw before any Bronze rebuild, including ingestion replays and backfills.
+Downstream-only replays skip this source check. Historical Phase 7 success states remain readable and
+continue to skip completed periods. Each validation writes an atomic, Git-ignored audit report under
+`data/state/schema/yellow/<year>/<month>/`. The committed contract remains the expected schema; reports
+record observations and never update the contract. Run a metadata-only audit with:
+
+```powershell
+docker compose run --rm pipeline python -m nyc_taxi_lakehouse.schema.validator --taxi-type yellow --start 2024-01 --end 2024-06
+```
+
+The real January–June 2024 files each had 19 fields and the same logical fingerprint,
+`bb50ef4789e8c8308c722cc37849a2b7a0d7e46869a01909b69db4c7e3714ff7`. All six were exact
+matches, `COMPATIBLE`, and `PASS`; no real schema evolution was observed. Final metadata checks took
+0.032761–0.045336 seconds per period. Airflow has not been implemented.
+
+```mermaid
+flowchart TB
+    RAW["Incoming Raw Parquet"] --> INSPECT["Metadata-only Schema Inspection"]
+    CONTRACT["Versioned Data Contract<br/>Yellow Taxi v1"] --> COMPARE["Schema Comparison"]
+    INSPECT --> COMPARE
+    COMPARE --> MATCH["Exact Match"] --> PASS["PASS"] --> BRONZE["Continue to Bronze"]
+    COMPARE --> CHANGE["Schema Change"]
+    CHANGE --> ADDED["Added Column"] --> CLASSIFY["Compatibility Classification"]
+    CHANGE --> REMOVED["Removed Column"] --> CLASSIFY
+    CHANGE --> TYPE["Type Change"] --> CLASSIFY
+    CHANGE --> NULLABILITY["Nullability Change"] --> CLASSIFY
+    CLASSIFY --> SAFE["Compatible / Warning"] --> BRONZE
+    CLASSIFY --> BREAKING["Breaking"] --> BLOCK["Block Downstream Processing"]
+```
 
 ## Production mapping (reference only)
 
