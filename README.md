@@ -240,7 +240,7 @@ instead of Pandas so the same processing model can scale beyond this local month
 - [x] Phase 2 — NYC Taxi ingestion
 - [x] Phase 3 — Bronze layer
 - [x] Phase 4 — Silver layer
-- [ ] Phase 5 — Gold layer
+- [x] Phase 5 — Gold layer
 - [ ] Phase 6 — Lakehouse/object storage
 - [ ] Phase 7 — Containerization improvements
 - [ ] Phase 8 — Airflow orchestration
@@ -329,6 +329,39 @@ read-back, and promoted together with rollback protection. A rerun produced the 
 replaced only the January outputs, demonstrating partition-level idempotency. The final run produced
 one Silver part file (65,398,600 bytes) and one quarantine part file (897,649 bytes). Phase 4
 completed with 15 passing tests and Ruff.
+
+### Phase 5 — Gold Analytics Layer
+
+Gold creates analytics-ready marts exclusively from the valid Silver partition; it never reads Raw,
+Bronze, or quarantine data. `total_revenue` is the sum of TLC `total_amount`, documented as a
+revenue-like trip-charge metric rather than company accounting revenue. Four purpose-built Parquet
+datasets are produced for each taxi type/year/month:
+
+- `daily_trip_metrics` — one row per `pickup_date`, with trip counts, total trip charges, fare/total
+  averages, distance, duration, and tip metrics.
+- `hourly_demand` — one row per `pickup_date` and `pickup_hour`, with trip counts, total trip charges,
+  average distance, and average duration.
+- `pickup_location_performance` — one row per `pickup_location_id`, with trip counts, total trip
+  charges, average trip charge, distance, duration, and total tips.
+- `payment_type_summary` — one row per numeric `payment_type`, with trip/revenue distribution,
+  percentages, and tip metrics.
+
+For Yellow Taxi 2024-01, 2,927,000 valid Silver trips produced 35 daily rows, 749 hourly rows, 260
+pickup-location rows, and 5 payment-type rows. Each mart reconciled its `trip_count` total to the
+Silver input. The local outputs contain one Snappy Parquet part file each: 6,507 bytes for daily,
+22,060 bytes for hourly, 13,863 bytes for pickup location, and 3,948 bytes for payment type. Payment
+trip and revenue percentages each reconciled to 100% within floating-point tolerance.
+
+Every Gold row carries `_gold_processed_at`, `_source_taxi_type`, `_source_year`, and `_source_month`.
+Gold uses temporary writes, Spark read-back validation, and coordinated replacement of all four target
+partitions, so a rerun replaces only that month rather than appending duplicate aggregates. The first
+January run took 49.17 seconds; a rerun retained the same results. Run the full Gold set with:
+
+```powershell
+docker compose run --rm pipeline python -m nyc_taxi_lakehouse.gold.processor --taxi-type yellow --year 2024 --month 1
+```
+
+Phase 5 completed with 18 passing tests and Ruff.
 
 ## Production mapping (reference only)
 

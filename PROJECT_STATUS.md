@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 4 — Silver Layer
+Phase 5 — Gold Analytics Layer
 
 ## Completed
 
@@ -27,14 +27,20 @@ Phase 4 — Silver Layer
 - Temporary paired writes, read-back validation, and partition-level replacement for Silver and
   quarantine outputs
 - Spark Silver integration tests using small local Bronze fixtures
+- PySpark Gold analytics processor and CLI reading valid Silver data only
+- Four validated Gold marts: daily trip metrics, hourly demand, pickup location performance, and
+  payment type summary
+- Temporary multi-dataset writes, Spark read-back validation, and coordinated partition replacement
+- Synthetic Gold unit and integration coverage for metrics, grains, reconciliation, percentages, and
+  partition-level idempotency
 
 ## Current Architecture
 
 One local Docker Compose `pipeline` service provides Python 3.11, Java 17, PySpark, and PyArrow. The
 pipeline can download official Yellow Taxi source Parquet files into local raw storage, produce lineage
 manifests, create source-aligned Bronze Parquet partitions, and produce valid Silver and quarantined
-Silver partitions. Gold transformations, MinIO, Airflow, dbt, Superset, and dashboards are not
-implemented.
+Silver partitions. It also creates four analytics-ready Gold Parquet datasets from valid Silver data.
+MinIO, Airflow, dbt, Superset, and dashboards are not implemented.
 
 ## Environment
 
@@ -58,6 +64,7 @@ docker compose run --rm pipeline ruff check src tests
 docker compose run --rm pipeline python -m nyc_taxi_lakehouse.ingestion.nyc_taxi --year 2024 --month 1
 docker compose run --rm pipeline python -m nyc_taxi_lakehouse.bronze.processor --taxi-type yellow --year 2024 --month 1
 docker compose run --rm pipeline python -m nyc_taxi_lakehouse.silver.processor --taxi-type yellow --year 2024 --month 1
+docker compose run --rm pipeline python -m nyc_taxi_lakehouse.gold.processor --taxi-type yellow --year 2024 --month 1
 ```
 
 ## Validation Completed
@@ -96,11 +103,25 @@ docker compose run --rm pipeline python -m nyc_taxi_lakehouse.silver.processor -
   zero failures. Counts may overlap for a record with multiple reasons.
 - A repeated Silver run replaced the January valid and quarantine partitions and produced the same
   reconciliation counts. The final measured run took 69.61 seconds.
+- Gold processed 2,927,000 valid January Silver trips only. `total_revenue` is the sum of TLC
+  `total_amount`, totaling 80,342,626.37 for the processed valid rows.
+- Gold output layout is `data/gold/<dataset>/yellow/year=2024/month=01/`. The January output has 35
+  daily-trip rows (14 columns, 6,507 bytes), 749 hourly-demand rows (10 columns, 22,060 bytes), 260
+  pickup-location rows (11 columns, 13,863 bytes), and 5 payment-type rows (12 columns, 3,948 bytes).
+  Each output has one Snappy Parquet part file.
+- Each Gold mart's summed `trip_count` reconciled to the 2,927,000-row Silver input. Payment trip and
+  total-revenue percentages each reconciled to 100% within floating-point tolerance.
+- January's highest-volume day was 2024-01-18 (109,088 trips); the busiest date-hour was
+  2024-01-17 at 18:00 (9,027 trips); pickup location ID 161 led with 141,742 trips; and payment type
+  1 led with 2,319,009 trips (79.2282%). Average trip distance was 3.6605 and average duration was
+  15.6586 minutes.
+- The first Gold run took 49.17 seconds. A second run took 71.01 seconds and safely replaced all four
+  January output partitions with identical row counts and reconciliations.
 
 ## Tests
 
-- `pytest`: 15 tests passed, including raw-to-Bronze and Bronze-to-Silver Spark integration, source
-  preservation, lineage, quality reason, and partition-level idempotency tests.
+- `pytest`: 18 tests passed, including raw-to-Bronze, Bronze-to-Silver, and Silver-to-Gold Spark
+  integration; Gold grain, metric, reconciliation, percentage, and partition-level idempotency tests.
 - `ruff check src tests`: passed.
 - Spark environment smoke test: passed.
 
@@ -134,7 +155,16 @@ are expected for this minimal local container and did not affect execution.
 - Keep zero-distance trips and nullable passenger counts because the January profile did not justify
   rejecting them for this analytical contract.
 - Promote temporary Silver and quarantine partitions as a pair only after Spark read-back validation.
+- Build Gold from valid Silver only, so quarantined records cannot silently influence analytical
+  aggregates.
+- Use distinct, business-question-driven marts rather than one generic aggregate. Each mart has an
+  explicit grain and validates that its trip counts reconcile to the Silver input.
+- Treat `sum(total_amount)` as a TLC trip-charge/revenue-like measure, not a financial accounting
+  revenue assertion.
+- Add period-level Gold lineage rather than fabricating a row-level source filename for aggregates.
+- Write and validate all four Gold partitions before promoting them together, preserving a rollback
+  path if one mart fails.
 
 ## Next Phase
 
-Phase 5 — Gold layer. This phase has **not** started.
+Phase 6 — Lakehouse/Object Storage. This phase has **not** started.
