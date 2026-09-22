@@ -1,0 +1,10 @@
+services:
+  pipeline:
+    build:
+      context: .
+    env_file:
+      - .env
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    command: python --version
