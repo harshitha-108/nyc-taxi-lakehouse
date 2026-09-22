@@ -5,9 +5,8 @@ Limousine Commission (TLC) Yellow Taxi trip records through Bronze, Silver, and 
 
 ## Current status
 
-**Phase 1 — repository and reproducible development environment** is complete. The first working
-pipeline milestone will implement this flow before object storage, orchestration, and BI are
-introduced:
+**Phase 2 — NYC TLC Yellow Taxi ingestion** is complete. The first processing milestone will add
+Bronze, Silver, and Gold layers after raw ingestion is established:
 
 ```mermaid
 flowchart LR
@@ -58,10 +57,43 @@ docker compose run --rm pipeline pytest
 docker compose run --rm pipeline ruff check src tests
 ```
 
+## Phase 2: NYC TLC raw-data ingestion
+
+The ingestion CLI downloads one official TLC-hosted Yellow Taxi Parquet file, validates its Parquet
+footer metadata without loading the dataset into memory, and writes a small lineage manifest. TLC's
+official [Trip Record Data page](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page) publishes
+monthly Parquet files through this URL pattern:
+
+```text
+https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_<year>-<month>.parquet
+```
+
+Download a month with:
+
+```powershell
+docker compose run --rm pipeline python -m nyc_taxi_lakehouse.ingestion.nyc_taxi --year 2024 --month 1
+```
+
+Use `--force` only when an existing local file should be replaced. By default, the command validates
+an existing local Parquet file and skips a valid file, making reruns idempotent. Downloads are written
+to a `.part` file and promoted to the final name only after validation succeeds.
+
+Raw data is organized by taxi type, year, and month:
+
+```text
+data/raw/
+├── yellow/2024/01/yellow_tripdata_2024-01.parquet
+└── metadata/yellow/2024/01/yellow_tripdata_2024-01.json
+```
+
+The generated manifest records the requested dataset, source URL, period, filename, local runtime
+path, UTC download time, and byte size. Raw Parquet files, manifests, and partial downloads are all
+excluded from Git.
+
 ## Roadmap
 
 1. Repository and development environment
-2. Download official TLC data and process a small, reproducible sample
+2. Download one official TLC file into local raw storage
 3. Bronze, Silver, and Gold PySpark pipeline with quarantine and metrics
 4. Local MinIO lakehouse storage, Docker services, Airflow, dbt, quality checks, analytics, tests, and CI
 

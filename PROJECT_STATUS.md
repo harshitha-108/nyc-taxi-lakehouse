@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 1 — Repository and Development Environment
+Phase 2 — NYC Taxi Ingestion
 
 ## Completed
 
@@ -13,12 +13,17 @@ Phase 1 — Repository and Development Environment
 - Docker Compose development service with Python, Java, and PySpark
 - Dependency, pytest, and Ruff configuration
 - README, environment template, Git ignore rules, and Docker build-context exclusions
+- Reusable Yellow Taxi ingestion module and `python -m` CLI
+- Atomic `.part` download behavior, bounded retries, Parquet footer validation, and error handling
+- Generated raw-data lineage manifests
+- Deterministic mocked ingestion tests and one official TLC integration download
 
 ## Current Architecture
 
-One local Docker Compose `pipeline` service provides Python 3.11, Java 17, and PySpark. No NYC Taxi
-data, ingestion pipeline, Bronze/Silver/Gold transformation, MinIO, Airflow, dbt, Superset, or
-dashboard has been implemented yet.
+One local Docker Compose `pipeline` service provides Python 3.11, Java 17, PySpark, and PyArrow. The
+pipeline can download official Yellow Taxi source Parquet files into local raw storage and produce
+lineage manifests. Bronze/Silver/Gold transformations, MinIO, Airflow, dbt, Superset, and dashboards
+are not implemented.
 
 ## Environment
 
@@ -27,6 +32,7 @@ dashboard has been implemented yet.
 - Python 3.11.16 (container)
 - OpenJDK 17.0.20.1 (container)
 - PySpark 3.5.3 (container)
+- PyArrow 18.1.0 (container)
 
 ## How to Run
 
@@ -38,6 +44,7 @@ docker compose build
 docker compose run --rm pipeline python --version
 docker compose run --rm pipeline pytest
 docker compose run --rm pipeline ruff check src tests
+docker compose run --rm pipeline python -m nyc_taxi_lakehouse.ingestion.nyc_taxi --year 2024 --month 1
 ```
 
 ## Validation Completed
@@ -49,17 +56,23 @@ docker compose run --rm pipeline ruff check src tests
 - A local SparkSession started, read a three-row DataFrame schema, returned a count of 3, completed a
   filter action returning 2 rows, and shut down cleanly.
 - `.env` is ignored and is not tracked.
+- Yellow Taxi January 2024 was downloaded from the official TLC URL, saved as
+  `data/raw/yellow/2024/01/yellow_tripdata_2024-01.parquet`, and validated as readable Parquet.
+- The downloaded file was 49,961,641 bytes. Its generated manifest is under
+  `data/raw/metadata/yellow/2024/01/`.
+- The same CLI command was run again and skipped the valid existing file without a re-download.
 
 ## Tests
 
-- `pytest`: one Phase 1 package-import test passed.
+- `pytest`: 9 tests passed, including mocked download, skip, force, cleanup, validation, and manifest
+  behavior.
 - `ruff check src tests`: passed.
 - Spark environment smoke test: passed.
 
 ## Known Issues
 
-None. Spark's missing `ps` utility and native Hadoop library warnings during the smoke test are
-expected for this minimal local container and did not affect execution.
+None. Spark's missing `ps` utility and native Hadoop library warnings during the Phase 1 smoke test
+are expected for this minimal local container and did not affect execution.
 
 ## Architecture Decisions
 
@@ -71,7 +84,13 @@ expected for this minimal local container and did not affect execution.
 - Exclude generated data directories from Git while preserving their structure with `.gitkeep` files.
 - Handle secrets through ignored environment files; `.env.example` contains only safe development
   values, and `.dockerignore` prevents local `.env` from entering image build contexts.
+- Store raw files by taxi type/year/month to make source periods independently addressable and prepare
+  for future partition-aware processing.
+- Validate downloaded Parquet through PyArrow footer metadata, keeping ingestion lightweight and
+  separate from later Spark transformations.
+- Make reruns idempotent by skipping an existing valid file; use atomic promotion from `.part` files
+  to avoid accepting interrupted downloads.
 
 ## Next Phase
 
-Phase 2 — NYC Taxi ingestion. This phase has **not** started.
+Phase 3 — Bronze layer. This phase has **not** started.
