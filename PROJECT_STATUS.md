@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 11 — Analytics Serving Layer & Mobility Dashboard (PASS)
+Phase 12 — Pipeline Reliability, Failure Recovery & Advanced Testing (PASS)
 
 ## Completed
 
@@ -59,6 +59,10 @@ Phase 11 — Analytics Serving Layer & Mobility Dashboard (PASS)
 - Airflow `publish_serving` task with filesystem/Iceberg compatibility and final serving reconciliation
 - Pinned Superset 6.0.0 local dashboard, REST bootstrap, and ten saved PostgreSQL-backed charts
 - Read-only six-month serving reconciliation and reusable SQL examples
+- Fail-closed schema-contract checks, isolated stage failure/replay tests, and compact period-level
+  reconciliation across local Parquet, Iceberg, and PostgreSQL serving
+- MinIO/Iceberg snapshot recovery and PostgreSQL five-mart rollback/retry tests using isolated state
+- Airflow task-state failure matrix and dashboard definition preflight/regression tests
 
 ## Current Architecture
 
@@ -285,11 +289,43 @@ docker compose --profile airflow --profile dashboard run --rm --no-deps --user a
   and five Gold row totals remained 20,332,093 / 20,015,099 / 316,994 / 207 / 4,408 / 1,550 /
   31 / 1,550. The latest local Raw/Bronze/Silver/Gold file timestamp predated Phase 11.
 
+### Phase 12 reliability validation
+
+- Injected a transient download error followed by a successful bounded retry, and a failed download
+  that left no final Raw file or reusable partial file. A breaking schema blocks downstream work;
+  malformed contracts fail closed. Added/reordered fields and severity precedence were tested.
+- Isolated Bronze, Silver, Gold, and geographic promotion failures preserved previously valid
+  partitions. Five Phase 7 stage-failure cases recorded failed/pending state and recovered with
+  narrow replay. Existing legacy state without newer stage keys still loads.
+- A dedicated Iceberg namespace/table retained its prior snapshot after an unreachable MinIO
+  endpoint and a separate pre-commit failure. Recovery created a new snapshot; repeated January
+  overwrite yielded one row and unrelated February remained one row. Iceberg mode did not silently
+  fall back to filesystem mode. S3A filesystem caching was disabled so changed endpoint settings
+  cannot reuse a prior filesystem instance; outage/recovery test phases use fresh Spark JVMs.
+- An isolated PostgreSQL schema preserved all five prior mart versions when the third insert failed.
+  Retry replaced all five atomically and remained idempotent; February was unchanged. A deliberately
+  unreachable PostgreSQL endpoint failed serving without changing existing Gold or serving state.
+- Airflow fixture runs reported the intended failed task, `UPSTREAM_FAILED` downstream tasks, and
+  retained upstream successes for ingestion, schema, Silver, Iceberg, serving, and reconciliation
+  failures. Serving recovery completed. The nine-task DAG has zero import errors.
+- Read-only January–June reconciliation passed for each period: Bronze = valid Silver + quarantine;
+  all five Gold marts represent valid Silver trips; eight Iceberg table row counts equal local
+  period counts; serving business values and trip totals equal Gold. Overall Bronze 20,332,093 =
+  Silver 20,015,099 + quarantine 316,994. All five Gold/serving trip totals are 20,015,099.
+- The historical Iceberg Bronze table remained readable at 20,332,093 rows overall and 2,964,624
+  January rows. Raw, Bronze, Silver, quarantine, and Gold file counts, byte totals, and
+  path/size/mtime SHA-256 metadata fingerprints matched the pre-test snapshot exactly.
+- Two Superset REST bootstraps reused dashboard ID 1 with five datasets and ten charts; all ten
+  chart-data queries passed. Chart definitions, layout, supported visualization types, and filter
+  scope passed static tests. A signed-in Chrome check displayed all ten rendered charts; the Top
+  Pickup Zones chart displayed a row-limit warning while still rendering.
+
 ## Tests
 
-- `pytest`: 89 passed in the final 88.94-second run as the non-root Airflow user with
+- Focused Phase 12 reliability files: 75 passed in 39.11 seconds.
+- Final full `pytest`: 130 passed in 383.84 seconds as the non-root Airflow user with
   `RUN_ICEBERG_INTEGRATION=1`, `RUN_SERVING_INTEGRATION=1`, and
-  `RUN_SUPERSET_INTEGRATION=1`; all 76 Phase 10 tests remain green.
+  `RUN_SUPERSET_INTEGRATION=1`; the prior 90-test baseline remains green.
 - `ruff check src tests airflow scripts`: passed.
 - `docker compose --profile airflow --profile dashboard config --quiet`: passed.
 - Superset chart-data API: ten of ten charts executed and returned rows.
@@ -317,7 +353,9 @@ filesystem mode; Iceberg and serving remain independently validated paths. The S
 local-only: it uses in-memory rate limiting and has no Content Security Policy, which Superset warns
 about on startup. The dashboard has source-month and scoped pickup-borough filters but no arbitrary
 date-range filter across all marts. The REST smoke verifies saved layout and all chart queries; a
-browser-based visual-regression test or screenshot was not performed. No formal database-vs-lakehouse
+  automated browser-based visual-regression test or screenshot was not committed. A signed-in local
+  browser inspection in Phase 12 showed all ten charts, with a row-limit warning on Top Pickup
+  Zones. No formal database-vs-lakehouse
 performance comparison was attempted.
 
 ## Architecture Decisions
@@ -392,6 +430,5 @@ performance comparison was attempted.
 
 ## Next Phase
 
-Phase 12 — Testing improvements. This phase has **not** started. Candidate work: broaden
-schema/quality/property-based coverage, automate dashboard visual checks, and add failure-injection
-scenarios; do not assume those features are already implemented.
+Phase 13 — CI/CD. It has **not** started. The next step is to run suitable unit, lint, and
+container-backed checks automatically in GitHub Actions without uploading datasets or credentials.

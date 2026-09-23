@@ -182,3 +182,62 @@ def test_invalid_contracts_fail_closed(tmp_path: Path, document: dict[str, objec
     path.write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(ValueError, match="Invalid"):
         load_contract(path)
+
+
+@pytest.mark.parametrize("change", [
+    {"name": "", "type": "int32", "required": True, "nullable": True},
+    {"name": "x", "type": "not_a_type", "required": True, "nullable": True},
+    {"name": "x", "type": "int32", "required": "true", "nullable": True},
+    {"name": "x", "type": "int32", "required": True, "nullable": "false"},
+])
+def test_malformed_field_contract_fails_closed(tmp_path: Path, change: dict) -> None:
+    path = tmp_path / "contract.json"
+    path.write_text(json.dumps({"contract_name": "test", "version": 1,
+                                "taxi_type": "yellow", "fields": [change]}), encoding="utf-8")
+    with pytest.raises(ValueError, match="Invalid"):
+        load_contract(path)
+
+
+@pytest.mark.parametrize("contents", ["{not json", "[]", "null"])
+def test_malformed_json_and_wrong_document_shape_fail_closed(
+    tmp_path: Path, contents: str
+) -> None:
+    path = tmp_path / "contract.json"
+    path.write_text(contents, encoding="utf-8")
+    with pytest.raises(ValueError, match="Invalid"):
+        load_contract(path)
+
+
+def test_missing_contract_and_boolean_version_fail_closed(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Invalid"):
+        load_contract(tmp_path / "missing.json")
+    path = tmp_path / "contract.json"
+    path.write_text(json.dumps({"contract_name": "test", "version": True,
+                                "taxi_type": "yellow", "fields": [
+                                    {"name": "x", "type": "int32", "required": True,
+                                     "nullable": True}]}), encoding="utf-8")
+    with pytest.raises(ValueError, match="Invalid"):
+        load_contract(path)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_breaking_severity_is_order_independent_amid_warnings(
+    tmp_path: Path, reverse: bool
+) -> None:
+    path = tmp_path / "source.parquet"
+    source_schema = pa.schema([pa.field("wrong_type", pa.string()),
+                               pa.field("narrower", pa.int32(), nullable=False)])
+    pq.write_table(pa.Table.from_arrays([pa.array(["a"]), pa.array([1])],
+                                        schema=source_schema), path)
+    fields = [Field("wrong_type", "int32", True),
+              Field("narrower", "int32", True),
+              Field("optional_missing", "int32", True, required=False)]
+    if reverse:
+        fields.reverse()
+    result = validate(path, ProcessingPeriod(2024, 1), Contract(
+        "test", 1, "yellow", tuple(fields)))
+    assert result["compatibility"] == Compatibility.BREAKING
+    assert result["decision"] == "BLOCK"
+    assert {item["type"] for item in result["changes"]} == {
+        "TYPE_CHANGED", "NULLABILITY_CHANGED", "REMOVED_COLUMN",
+    }

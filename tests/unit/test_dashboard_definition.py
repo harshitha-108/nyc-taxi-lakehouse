@@ -1,8 +1,20 @@
 """Dashboard contract tests requiring neither Superset nor PostgreSQL."""
 
 import json
+from dataclasses import replace
 
-from scripts.bootstrap_dashboard import _filters, _layout, chart_specs, query_context
+import pytest
+from scripts.bootstrap_dashboard import (
+    MART_NAMES,
+    TITLE,
+    _filters,
+    _layout,
+    chart_specs,
+    query_context,
+    validate_chart_specs,
+)
+
+from nyc_taxi_lakehouse.serving.database import MARTS
 
 
 def test_dashboard_charts_use_only_serving_marts() -> None:
@@ -64,3 +76,42 @@ def test_saved_query_context_identifies_serving_dataset() -> None:
     context = json.loads(query_context(7, spec.params))
     assert context["datasource"] == {"id": 7, "type": "table"}
     assert context["queries"][0]["metrics"][0]["label"] == "Trips"
+
+
+def test_dashboard_definition_references_existing_serving_fields() -> None:
+    specs = chart_specs()
+    validate_chart_specs(specs)
+    assert TITLE == "NYC Urban Mobility Overview"
+    assert len(MART_NAMES) == len(MARTS) == 5
+    names_by_mart = {mart.name: set(mart.names) for mart in MARTS}
+    assert len({spec.name for spec in specs}) == 10
+    for spec in specs:
+        fields = names_by_mart[spec.mart]
+        if "x_axis" in spec.params:
+            assert spec.params["x_axis"] in fields
+        for value in spec.params.get("metrics", []):
+            assert value["column"]["column_name"] in fields
+    chart_ids = {spec.name: number for number, spec in enumerate(specs, start=1)}
+    layout = json.loads(_layout(chart_ids))
+    assert {node["meta"]["chartId"] for node in layout.values()
+            if isinstance(node, dict) and node.get("type") == "CHART"} == set(chart_ids.values())
+    filters = _filters({name: index for index, name in enumerate(MART_NAMES, start=1)},
+                       chart_ids)
+    assert [item["name"] for item in filters] == ["Source Month", "Pickup Borough"]
+    assert filters[0]["targets"][0]["column"]["name"] in names_by_mart[
+        "daily_trip_metrics"]
+    assert filters[1]["targets"][0]["column"]["name"] in names_by_mart[
+        "pickup_zone_performance"]
+    expected_geographic = {chart_ids[name] for name in (
+        "Pickup Trips by Borough", "Top Pickup Zones")}
+    assert set(chart_ids.values()) - set(filters[1]["scope"]["excluded"]) == expected_geographic
+
+
+def test_unsupported_chart_fails_before_dashboard_api_mutation() -> None:
+    specs = chart_specs()
+    unsupported = (*specs[:-1], replace(specs[-1], viz_type="dist_bar"))
+    with pytest.raises(ValueError, match="Unsupported dashboard definition"):
+        validate_chart_specs(unsupported)
+    bad_axis = (*specs[:-1], replace(specs[-1], params={"metrics": []}))
+    with pytest.raises(ValueError, match="lacks a category axis"):
+        validate_chart_specs(bad_axis)

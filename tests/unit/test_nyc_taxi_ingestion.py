@@ -147,3 +147,27 @@ def test_invalid_download_is_rejected_and_not_promoted(
 
     assert not expected_file.with_suffix(".parquet.part").exists()
     assert not expected_file.exists()
+
+
+def test_transient_download_failure_retries_without_publishing_partial_raw(
+    taxi_request: TaxiDataRequest, tmp_path: Path, parquet_bytes: bytes
+) -> None:
+    target = raw_data_path(taxi_request, tmp_path)
+
+    class RecoveringSession:
+        calls = 0
+
+        def get(self, url: str, **_: object) -> FakeResponse:
+            assert url == taxi_request.source_url
+            self.calls += 1
+            assert not target.exists()
+            if self.calls == 1:
+                raise requests.ConnectionError("transient outage")
+            return FakeResponse(parquet_bytes)
+
+    session = RecoveringSession()
+    result = ingest_taxi_data(taxi_request, destination_dir=tmp_path, session=session)  # type: ignore[arg-type]
+    assert session.calls == 2
+    assert result.skipped is False
+    validate_parquet(target)
+    assert not target.with_suffix(".parquet.part").exists()

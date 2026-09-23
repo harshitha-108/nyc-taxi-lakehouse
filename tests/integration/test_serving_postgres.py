@@ -16,6 +16,7 @@ import pytest
 from psycopg2 import sql
 
 from nyc_taxi_lakehouse.orchestration.state import ProcessingPeriod
+from nyc_taxi_lakehouse.serving import publisher
 from nyc_taxi_lakehouse.serving.config import ServingConfig
 from nyc_taxi_lakehouse.serving.database import MARTS, Mart
 from nyc_taxi_lakehouse.serving.publisher import gold_path, publish_period
@@ -114,3 +115,58 @@ def test_real_postgres_period_replacement_and_rollback(
         publish_period(isolated_config, january, gold_dir=tmp_path)
     assert _snapshot(isolated_config, january) == prior_good
     assert _snapshot(isolated_config, february) == february_before
+
+
+def test_five_mart_insert_failure_rolls_back_then_retry_is_idempotent(
+    isolated_config: ServingConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    january, february = ProcessingPeriod(2024, 1), ProcessingPeriod(2024, 2)
+    _write_gold(tmp_path, january)
+    _write_gold(tmp_path, february)
+    publish_period(isolated_config, january, gold_dir=tmp_path)
+    publish_period(isolated_config, february, gold_dir=tmp_path)
+    previous_january = _snapshot(isolated_config, january)
+    previous_february = _snapshot(isolated_config, february)
+    _write_gold(tmp_path, january, trips=3)
+    real_insert = publisher.execute_values
+    attempts = 0
+
+    def fail_third_insert(*args: object, **kwargs: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 3:
+            raise RuntimeError("injected insert fault in third mart")
+        real_insert(*args, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(publisher, "execute_values", fail_third_insert)
+        with pytest.raises(RuntimeError, match="third mart"):
+            publish_period(isolated_config, january, gold_dir=tmp_path)
+    assert attempts == 3
+    assert _snapshot(isolated_config, january) == previous_january
+    assert _snapshot(isolated_config, february) == previous_february
+
+    recovered = publish_period(isolated_config, january, gold_dir=tmp_path)
+    assert all(item.trip_count == 3 for item in recovered.marts.values())
+    after_recovery = _snapshot(isolated_config, january)
+    assert _snapshot(isolated_config, february) == previous_february
+    publish_period(isolated_config, january, gold_dir=tmp_path)
+    assert _snapshot(isolated_config, january) == after_recovery
+
+
+def test_postgres_connection_outage_preserves_other_layers_and_recovers(
+    isolated_config: ServingConfig, tmp_path: Path,
+) -> None:
+    january = ProcessingPeriod(2024, 1)
+    _write_gold(tmp_path, january)
+    publish_period(isolated_config, january, gold_dir=tmp_path)
+    before = _snapshot(isolated_config, january)
+    gold_file = gold_path(tmp_path, MARTS[0], "yellow", january) / "part-00000.parquet"
+    gold_before = gold_file.read_bytes()
+    _write_gold(tmp_path, january, trips=3)
+    with pytest.raises(psycopg2.OperationalError):
+        publish_period(replace(isolated_config, port=1), january, gold_dir=tmp_path)
+    assert _snapshot(isolated_config, january) == before
+    assert gold_file.is_file() and gold_file.read_bytes() != gold_before
+    publish_period(isolated_config, january, gold_dir=tmp_path)
+    assert all(trips == 3 for _, trips in _snapshot(isolated_config, january).values())

@@ -10,6 +10,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 
 from nyc_taxi_lakehouse.bronze.processor import create_spark_session
+from nyc_taxi_lakehouse.gold import processor
 from nyc_taxi_lakehouse.gold.processor import (
     GOLD_DATASETS,
     GRAINS,
@@ -96,3 +97,29 @@ def test_gold_write_validates_all_outputs_and_replaces_target_partition(
     )
     assert payment_dataframe.agg(F.sum("trip_percentage")).first()[0] == pytest.approx(100.0)
     assert payment_dataframe.agg(F.sum("revenue_percentage")).first()[0] == pytest.approx(100.0)
+
+
+def test_failed_gold_promotion_preserves_all_four_prior_marts(
+    spark: SparkSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    silver_dir, gold_dir = tmp_path / "silver", tmp_path / "gold"
+    request = GoldRequest("yellow", 2024, 1)
+    _silver_dataframe(spark).write.mode("overwrite").parquet(
+        str(_silver_partition_path(silver_dir, request)))
+    process_gold_partition(spark, request, silver_dir=silver_dir, gold_dir=gold_dir)
+    before = {name: next(gold_partition_path(request, gold_dir, name).glob(
+        "part-*.parquet")).read_bytes() for name in GOLD_DATASETS}
+
+    def fail_promotion(*args: object) -> None:
+        raise RuntimeError("injected Gold promotion fault")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(processor, "_promote_partitions", fail_promotion)
+        with pytest.raises(RuntimeError, match="Gold promotion fault"):
+            process_gold_partition(spark, request, silver_dir=silver_dir, gold_dir=gold_dir)
+    for name in GOLD_DATASETS:
+        path = gold_partition_path(request, gold_dir, name)
+        assert next(path.glob("part-*.parquet")).read_bytes() == before[name]
+        assert not list(path.parent.glob("*.__temporary__*"))
+    recovered = process_gold_partition(spark, request, silver_dir=silver_dir, gold_dir=gold_dir)
+    assert all(item["rows"] > 0 for item in recovered.datasets.values())

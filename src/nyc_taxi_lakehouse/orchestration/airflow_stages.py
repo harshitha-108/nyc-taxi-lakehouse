@@ -21,6 +21,7 @@ from nyc_taxi_lakehouse.gold.processor import (
 )
 from nyc_taxi_lakehouse.ingestion.nyc_taxi import TaxiDataRequest, ingest_taxi_data, raw_data_path
 from nyc_taxi_lakehouse.orchestration.pipeline import PipelinePaths, validate_period_artifacts
+from nyc_taxi_lakehouse.orchestration.reliability import reconcile_period_counts
 from nyc_taxi_lakehouse.orchestration.state import ProcessingPeriod
 from nyc_taxi_lakehouse.reference.taxi_zones import ingest_taxi_zones
 from nyc_taxi_lakehouse.schema.validator import Compatibility, validate_and_report
@@ -177,28 +178,30 @@ def execute_stage(
                 "quarantine": quarantine_partition_path(silver_request, active.quarantine_dir),
             }
             counts = {name: spark.read.parquet(str(path)).count() for name, path in sources.items()}
-            if counts["bronze"] != counts["silver"] + counts["quarantine"]:
-                raise ValueError(f"Silver reconciliation failed for {period.identifier}: {counts}")
+            gold_counts = {}
             for dataset in (*GOLD_DATASETS, "pickup_zone_performance"):
                 path = (gold_partition_path(gold_request, active.gold_dir, dataset)
                         if dataset in GOLD_DATASETS
                         else pickup_zone_partition_path(gold_request, active.gold_dir))
-                represented = spark.read.parquet(str(path)).agg(F.sum("trip_count")).first()[0]
-                if represented != counts["silver"]:
-                    raise ValueError(f"Gold reconciliation failed for {dataset}: {represented}")
-            if storage_backend == "iceberg":
-                iceberg_counts = validate_published_period(spark, taxi_type, period)
-                for name in counts:
-                    if iceberg_counts[name] != counts[name]:
-                        raise ValueError(f"Iceberg/local count mismatch for {name}")
+                row = spark.read.parquet(str(path)).agg(
+                    F.count("*").alias("rows"), F.sum("trip_count").alias("trips")
+                ).first()
+                gold_counts[dataset] = (int(row["rows"]), int(row["trips"] or 0))
+            iceberg_counts = (validate_published_period(spark, taxi_type, period)
+                              if storage_backend == "iceberg" else None)
             serving = validate_period(
                 ServingConfig.from_env(), period, taxi_type=taxi_type, gold_dir=active.gold_dir
             )
-            if any(item.trip_count != counts["silver"] for item in serving.values()):
-                raise ValueError(f"Serving/Silver count mismatch for {period.identifier}")
-            return {"bronze_rows": counts["bronze"], "valid_rows": counts["silver"],
+            result = reconcile_period_counts(
+                period, bronze_rows=counts["bronze"], silver_rows=counts["silver"],
+                quarantine_rows=counts["quarantine"], gold=gold_counts,
+                iceberg_rows=iceberg_counts,
+                serving_trips={name: item.trip_count for name, item in serving.items()},
+            )
+            return {**result, "bronze_rows": counts["bronze"],
+                    "valid_rows": counts["silver"],
                     "quarantine_rows": counts["quarantine"],
-                    "gold_marts_reconciled": len(GOLD_DATASETS) + 1,
+                    "gold_marts_reconciled": len(gold_counts),
                     "serving_marts_reconciled": len(serving)}
         finally:
             spark.stop()

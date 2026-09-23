@@ -10,6 +10,7 @@ from pyspark.sql import SparkSession
 
 from nyc_taxi_lakehouse.bronze.processor import create_spark_session
 from nyc_taxi_lakehouse.ingestion.nyc_taxi import InvalidRequestError
+from nyc_taxi_lakehouse.silver import processor
 from nyc_taxi_lakehouse.silver.processor import (
     QUALITY_REASONS_COLUMN,
     SilverRequest,
@@ -115,3 +116,36 @@ def test_silver_write_reconciles_and_replaces_only_target_partition(
 def test_invalid_silver_request_rejects_month() -> None:
     with pytest.raises(InvalidRequestError, match="Month"):
         SilverRequest("yellow", 2024, 13)
+
+
+def test_failed_silver_promotion_preserves_valid_and_quarantine(
+    spark: SparkSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bronze_dir, silver_dir, quarantine_dir = (
+        tmp_path / "bronze", tmp_path / "silver", tmp_path / "quarantine")
+    request = SilverRequest("yellow", 2024, 1)
+    source = bronze_dir / "yellow/year=2024/month=01"
+    _bronze_dataframe(spark).write.mode("overwrite").parquet(str(source))
+    first = process_silver_partition(
+        spark, request, bronze_dir=bronze_dir, silver_dir=silver_dir,
+        quarantine_dir=quarantine_dir)
+    before_valid = next(first.silver_path.glob("part-*.parquet")).read_bytes()
+    before_rejected = next(first.quarantine_path.glob("part-*.parquet")).read_bytes()
+
+    def fail_promotion(*args: object) -> None:
+        raise RuntimeError("injected Silver promotion fault")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(processor, "_promote_partitions", fail_promotion)
+        with pytest.raises(RuntimeError, match="Silver promotion fault"):
+            process_silver_partition(
+                spark, request, bronze_dir=bronze_dir, silver_dir=silver_dir,
+                quarantine_dir=quarantine_dir)
+    assert next(first.silver_path.glob("part-*.parquet")).read_bytes() == before_valid
+    assert next(first.quarantine_path.glob("part-*.parquet")).read_bytes() == before_rejected
+    assert not list(first.silver_path.parent.glob("*.__temporary__*"))
+    assert not list(first.quarantine_path.parent.glob("*.__temporary__*"))
+    recovered = process_silver_partition(
+        spark, request, bronze_dir=bronze_dir, silver_dir=silver_dir,
+        quarantine_dir=quarantine_dir)
+    assert (recovered.valid_rows, recovered.rejected_rows) == (1, 3)

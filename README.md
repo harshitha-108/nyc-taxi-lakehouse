@@ -263,7 +263,7 @@ instead of Pandas so the same processing model can scale beyond this local month
 - [x] Phase 9 — MinIO + Apache Iceberg lakehouse storage
 - [x] Phase 10 — Airflow Production Orchestration
 - [x] Phase 11 — Analytics Serving Layer & Mobility Dashboard
-- [ ] Phase 12 — Testing improvements
+- [x] Phase 12 — Pipeline Reliability, Failure Recovery & Advanced Testing
 - [ ] Phase 13 — CI/CD
 - [ ] Phase 14 — Performance/scalability
 - [ ] Phase 15 — Final documentation/interview preparation
@@ -749,6 +749,91 @@ and Airflow tests plus isolated PostgreSQL and real Superset API tests. Ruff pas
 not production hardened: example passwords must be changed beyond localhost, Superset currently uses
 in-memory rate limiting and lacks a Content Security Policy, and the dashboard API smoke proves
 data execution and saved layout but is not a browser visual-regression test.
+
+### Phase 12 — Pipeline Reliability, Failure Recovery & Advanced Testing
+
+Phase 12 tests failure boundaries in the existing local architecture; it adds no new data platform.
+An isolated failure must stop dependent work, preserve the last valid publication, and allow a
+deliberate retry. Airflow remains the control plane, and a breaking data contract remains a
+non-retryable gate. Transient ingestion and service failures are retryable; neither is allowed to
+silently fall back to a different storage backend.
+
+```mermaid
+flowchart LR
+    RAW["Raw + schema gate"] --> MED["Bronze / Silver / Gold"]
+    MED -->|optional publication| ICE["Iceberg / MinIO"]
+    MED -->|Gold marts| PG["PostgreSQL serving"] --> BI["Superset"]
+    FAULT["Injected fault"] -.-> MED
+    FAULT -.-> ICE
+    FAULT -.-> PG
+    RAW --> CHECK["Period reconciliation"]
+    MED --> CHECK
+    ICE --> CHECK
+    PG --> CHECK
+    CHECK --> RETRY["Safe retry / replay"]
+```
+
+The test matrix covers a transient and a permanent mocked download failure; removed, retyped,
+nullability-breaking, reordered, and newly nullable schema fields; malformed contracts; and
+injected Bronze, Silver, Gold, and geographic stage faults. Schema severity is order-independent:
+`BREAKING` is never downgraded by a later warning. Failed processors retain the prior local
+partition and clean temporary output; isolated stage-state tests confirm dependent stages remain
+pending and a narrow replay succeeds. Existing Phase 7 state without newer stage keys still loads.
+
+| Injected boundary | Failure/blocked work | Preserved state | Recovery evidence |
+| --- | --- | --- | --- |
+| Download or breaking contract | Ingestion/schema gate; later stages blocked | Earlier period files | Download retry; gate classification |
+| Bronze, Silver, Gold, geographic promotion | Addressed stage; later stages pending | Prior target partitions and unrelated marts | Narrow stage replay |
+| Unreachable MinIO or Iceberg pre-commit fault | Iceberg publication; serving/reconciliation blocked in DAG | Prior snapshot and unrelated month | Fresh-session retry, no duplicate rows |
+| PostgreSQL outage or third-mart insert fault | Serving publication; final reconciliation blocked | Five prior mart versions, upstream Gold/Iceberg | Atomic retry, idempotent republish |
+| Reconciliation corruption or malformed chart | Final validation or dashboard preflight | Published data/dashboard | Detection before false success/API writes |
+
+An Iceberg test uses a unique namespace and catalog, not the January–June tables. An unreachable
+MinIO endpoint fails publication without filesystem fallback; the prior snapshot remains readable.
+Restoring the endpoint in a fresh Spark JVM permits a new snapshot and idempotent January overwrite
+while February stays unchanged. A separate pre-commit fault also leaves the prior snapshot intact.
+S3A filesystem caching is disabled for newly configured Spark sessions so an endpoint-specific
+session cannot silently reuse a previous S3A filesystem; recovery tests start fresh JVMs because
+Iceberg file-I/O instances can retain failed connection state inside a process.
+
+The PostgreSQL tests use an isolated analytics schema. An unavailable endpoint leaves Gold and
+the previously served period intact. A fault on the third mart insert rolls back all five mart
+replacements in one transaction; retry updates all five, a second retry remains idempotent, and an
+unrelated month remains unchanged. Airflow fixture runs assert real task states for failures at
+ingestion, schema validation, Silver, Iceberg publication, serving publication, and final
+reconciliation. The failed task is `FAILED`, downstream tasks are `UPSTREAM_FAILED`, and prior
+successful tasks remain successful. The production DAG still has nine tasks and zero import errors.
+
+Final period reconciliation fails on Bronze ≠ valid Silver + quarantine, any Gold mart trip total
+≠ valid Silver, missing/mismatched Iceberg table counts, or serving trip totals ≠ valid Silver.
+The existing serving validator separately checks Gold-to-PostgreSQL business values. Read-only
+January–June checks passed across all six periods and five marts: 20,332,093 Bronze rows =
+20,015,099 valid Silver + 316,994 quarantine rows; each Gold and serving mart represents
+20,015,099 valid trips. The Iceberg Bronze table remains readable at 20,332,093 rows, including
+2,964,624 January rows. Before/after file count, byte count, and path/size/mtime fingerprints
+matched for historical Raw, Bronze, Silver, quarantine, and Gold directories.
+
+Dashboard preflight rejects unsupported visualization types (including obsolete `dist_bar`),
+duplicate/missing chart definitions, and bar charts without a category axis before API writes.
+Tests verify five serving datasets, ten uniquely named charts, layout references, and the current
+source-month and geographic-filter scope. Two REST bootstraps reused dashboard ID 1 without
+duplicates; all ten chart-data queries passed. A signed-in local Chrome session displayed all ten
+rendered charts. “Top Pickup Zones” renders but shows Superset's row-limit warning; the dashboard
+still has no arbitrary cross-mart date-range filter.
+
+Run the focused and full regression from the repository root after starting the local services:
+
+```powershell
+docker compose --profile airflow --profile dashboard run --rm --no-deps --user airflow -e RUN_SERVING_INTEGRATION=1 airflow-init pytest -p no:cacheprovider -q tests/unit/test_nyc_taxi_ingestion.py tests/unit/test_schema_validator.py tests/unit/test_reliability_reconciliation.py tests/unit/test_dashboard_definition.py tests/integration/test_orchestration_pipeline.py tests/integration/test_airflow_dag.py tests/integration/test_serving_postgres.py
+docker compose --profile airflow --profile dashboard run --rm --no-deps --user airflow -e RUN_ICEBERG_INTEGRATION=1 -e RUN_SERVING_INTEGRATION=1 -e RUN_SUPERSET_INTEGRATION=1 airflow-init pytest -p no:cacheprovider -q
+docker compose --profile airflow --profile dashboard run --rm --no-deps pipeline ruff check src tests airflow scripts
+docker compose --profile airflow --profile dashboard config --quiet
+```
+
+The focused run passed 75 tests; the final full Docker run passed 130 tests in 383.84 seconds, including
+the original Phase 1–11 coverage. Failure injection uses temporary directories, a dedicated
+Iceberg namespace, an isolated PostgreSQL schema, and Airflow stubs. No historical business
+partition was reprocessed to obtain this evidence.
 
 ## Production mapping (reference only)
 

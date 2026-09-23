@@ -17,6 +17,9 @@ MART_NAMES = (
     "daily_trip_metrics", "hourly_demand", "pickup_location_performance",
     "payment_type_summary", "pickup_zone_performance",
 )
+SUPPORTED_VIZ_TYPES = frozenset({
+    "big_number_total", "echarts_timeseries_line", "echarts_timeseries_bar",
+})
 
 
 def required(name: str) -> str:
@@ -84,6 +87,17 @@ def chart_specs() -> tuple[ChartSpec, ...]:
                   {**no_time, "x_axis": "payment_type", "x_axis_force_categorical": True,
                    "groupby": [], "metrics": [metric("trip_count", "Trips")]}),
     )
+
+
+def validate_chart_specs(specs: tuple[ChartSpec, ...]) -> None:
+    """Fail before API writes if a saved chart cannot render in pinned Superset 6."""
+    if len(specs) != 10 or len({spec.name for spec in specs}) != len(specs):
+        raise ValueError("Dashboard requires ten uniquely named charts.")
+    for spec in specs:
+        if spec.mart not in MART_NAMES or spec.viz_type not in SUPPORTED_VIZ_TYPES:
+            raise ValueError(f"Unsupported dashboard definition: {spec.name}")
+        if spec.viz_type == "echarts_timeseries_bar" and not spec.params.get("x_axis"):
+            raise ValueError(f"Bar chart lacks a category axis: {spec.name}")
 
 
 def query_context(dataset_id: int, params: dict[str, object]) -> str:
@@ -183,6 +197,8 @@ def _filters(dataset_ids: dict[str, int], chart_ids: dict[str, int]) -> list[dic
 
 def bootstrap(client: SupersetClient) -> dict[str, object]:
     """Create or update exactly one dashboard and its serving-only assets."""
+    specs = chart_specs()
+    validate_chart_specs(specs)
     existing_databases = {item["database_name"]: item["id"]
                           for item in client.listed("database")}
     database_id = existing_databases.get(DATABASE_NAME)
@@ -212,7 +228,7 @@ def bootstrap(client: SupersetClient) -> dict[str, object]:
 
     existing_charts = {item["slice_name"]: item["id"] for item in client.listed("chart")}
     chart_ids = {}
-    for spec in chart_specs():
+    for spec in specs:
         params = {**spec.params, "datasource": f"{dataset_ids[spec.mart]}__table",
                   "viz_type": spec.viz_type}
         body = {"slice_name": spec.name, "datasource_id": dataset_ids[spec.mart],

@@ -10,6 +10,7 @@ import pyarrow.parquet as pq
 import pytest
 from pyspark.sql import SparkSession
 
+from nyc_taxi_lakehouse.bronze import processor
 from nyc_taxi_lakehouse.bronze.processor import (
     LINEAGE_COLUMNS,
     BronzeRequest,
@@ -95,3 +96,25 @@ def test_bronze_write_readback_and_partition_level_idempotency(
     january_readback = spark.read.parquet(str(january_second.target_path))
     assert january_readback.count() == 2
     assert set(LINEAGE_COLUMNS).issubset(january_readback.columns)
+
+
+def test_failed_bronze_promotion_preserves_previous_partition(
+    spark: SparkSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_dir, bronze_dir = tmp_path / "raw", tmp_path / "bronze"
+    request = BronzeRequest("yellow", 2024, 1)
+    _write_raw_fixture(spark, raw_dir, request)
+    first = write_bronze_partition(spark, request, raw_dir=raw_dir, bronze_dir=bronze_dir)
+    before = next(first.target_path.glob("part-*.parquet")).read_bytes()
+
+    def fail_promotion(*args: object) -> None:
+        raise RuntimeError("injected Bronze promotion fault")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(processor, "_replace_partition", fail_promotion)
+        with pytest.raises(RuntimeError, match="Bronze promotion fault"):
+            write_bronze_partition(spark, request, raw_dir=raw_dir, bronze_dir=bronze_dir)
+    assert next(first.target_path.glob("part-*.parquet")).read_bytes() == before
+    assert not list(first.target_path.parent.glob("*.__temporary__*"))
+    recovered = write_bronze_partition(spark, request, raw_dir=raw_dir, bronze_dir=bronze_dir)
+    assert recovered.bronze_rows == first.bronze_rows == 2

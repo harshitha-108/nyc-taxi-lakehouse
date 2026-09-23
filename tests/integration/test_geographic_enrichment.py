@@ -9,6 +9,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 
 from nyc_taxi_lakehouse.bronze.processor import create_spark_session
+from nyc_taxi_lakehouse.gold import geographic
 from nyc_taxi_lakehouse.gold.geographic import (
     enrich_with_taxi_zone,
     pickup_zone_partition_path,
@@ -104,3 +105,32 @@ def test_geographic_pipeline_reconciles_and_is_idempotent(
     assert enriched.agg(F.sum("trip_count")).first()[0] == 35
     assert enriched.filter(F.col("pickup_location_id") == 3).first().borough is None
     assert pickup_zone_partition_path(february, gold_dir).exists()
+
+
+def test_failed_geographic_promotion_preserves_prior_zone_and_location_marts(
+    spark: SparkSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gold_dir, reference_dir = tmp_path / "gold", tmp_path / "reference"
+    request = GoldRequest("yellow", 2024, 1)
+    _write_reference_csv(reference_dir)
+    _write_location_gold(spark, gold_dir, request)
+    first = process_geographic_enrichment(
+        spark, request, gold_dir=gold_dir, reference_dir=reference_dir)
+    prior_zone = next(first.target_path.glob("part-*.parquet")).read_bytes()
+    location_path = gold_partition_path(request, gold_dir, "pickup_location_performance")
+    prior_location = next(location_path.glob("part-*.parquet")).read_bytes()
+
+    def fail_promotion(*args: object) -> None:
+        raise RuntimeError("injected geographic promotion fault")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(geographic, "_replace_partition", fail_promotion)
+        with pytest.raises(RuntimeError, match="geographic promotion fault"):
+            process_geographic_enrichment(
+                spark, request, gold_dir=gold_dir, reference_dir=reference_dir)
+    assert next(first.target_path.glob("part-*.parquet")).read_bytes() == prior_zone
+    assert next(location_path.glob("part-*.parquet")).read_bytes() == prior_location
+    assert not list(first.target_path.parent.glob("*.__temporary__*"))
+    recovered = process_geographic_enrichment(
+        spark, request, gold_dir=gold_dir, reference_dir=reference_dir)
+    assert recovered.output_rows == first.output_rows == 3

@@ -150,3 +150,87 @@ def test_serving_failure_does_not_change_upstream_success(
     assert states["publish_iceberg"] == TaskInstanceState.SUCCESS
     assert states["publish_serving"] == TaskInstanceState.FAILED
     assert states["validate_reconciliation"] == TaskInstanceState.UPSTREAM_FAILED
+
+
+@pytest.mark.parametrize(("failing_stage", "position"), [
+    ("ingest_raw", 0), ("validate_schema", 1), ("silver", 3),
+    ("publish_iceberg", 6), ("publish_serving", 7),
+    ("validate_reconciliation", 8),
+])
+def test_airflow_failure_state_matrix(
+    dag, monkeypatch: pytest.MonkeyPatch, failing_stage: str, position: int,
+) -> None:
+    ordered = (
+        "ingest_raw", "validate_schema", "bronze", "silver", "gold",
+        "geographic", "publish_iceberg", "publish_serving", "validate_reconciliation",
+    )
+    calls = []
+
+    def fake_stage(stage, period, taxi_type, storage_backend, paths=None):
+        calls.append(stage)
+        if stage == failing_stage:
+            raise RuntimeError(f"injected {stage} fault")
+        return {"rows": 2}
+
+    monkeypatch.setattr(airflow_stages, "execute_stage", fake_stage)
+    task = dag.get_task(failing_stage)
+    original_retries = task.retries
+    task.retries = 0  # Observe terminal state without waiting through retry delay.
+    try:
+        run = dag.test(
+            execution_date=datetime.now(UTC) - timedelta(days=30 + position),
+            run_conf={"period": "2024-03", "storage_backend": "iceberg"},
+        )
+    finally:
+        task.retries = original_retries
+    states = {item.task_id: item.state for item in run.get_task_instances()}
+    assert run.state == DagRunState.FAILED
+    assert states[failing_stage] == TaskInstanceState.FAILED
+    assert all(states[stage] == TaskInstanceState.SUCCESS for stage in ordered[:position])
+    assert all(states[stage] == TaskInstanceState.UPSTREAM_FAILED
+               for stage in ordered[position + 1:])
+    assert calls == list(ordered[:position + 1])
+
+
+def test_airflow_serving_recovery_preserves_upstream_success(
+    dag, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    visible_serving_rows = {"2024-03": 2}
+
+    def fake_stage(stage, period, taxi_type, storage_backend, paths=None):
+        nonlocal attempts
+        if stage == "publish_serving":
+            attempts += 1
+            if attempts == 1:
+                raise ConnectionError("injected PostgreSQL outage")
+            visible_serving_rows[period.identifier] = 2
+        if stage == "validate_reconciliation":
+            assert visible_serving_rows[period.identifier] == 2
+        return {"rows": 2}
+
+    monkeypatch.setattr(airflow_stages, "execute_stage", fake_stage)
+    task = dag.get_task("publish_serving")
+    original_retries = task.retries
+    task.retries = 0
+    try:
+        failed = dag.test(
+            execution_date=datetime.now(UTC) - timedelta(days=45),
+            run_conf={"period": "2024-03", "storage_backend": "iceberg"},
+        )
+        failed_states = {item.task_id: item.state for item in failed.get_task_instances()}
+        assert failed_states["gold"] == TaskInstanceState.SUCCESS
+        assert failed_states["publish_serving"] == TaskInstanceState.FAILED
+        assert visible_serving_rows == {"2024-03": 2}
+        recovered = dag.test(
+            execution_date=datetime.now(UTC) - timedelta(days=46),
+            run_conf={"period": "2024-03", "storage_backend": "iceberg"},
+        )
+    finally:
+        task.retries = original_retries
+    assert recovered.state == DagRunState.SUCCESS
+    states = {item.task_id: item.state for item in recovered.get_task_instances()}
+    assert states["publish_serving"] == TaskInstanceState.SUCCESS
+    assert states["validate_reconciliation"] == TaskInstanceState.SUCCESS
+    assert attempts == 2
+    assert visible_serving_rows == {"2024-03": 2}

@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 from nyc_taxi_lakehouse.ingestion.nyc_taxi import TaxiDataRequest, raw_data_path
@@ -48,22 +49,32 @@ def fingerprint(fields: tuple[Field, ...]) -> str:
 def load_contract(path: Path = Path("configs/contracts/yellow_taxi.json")) -> Contract:
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(doc, dict) or not isinstance(doc.get("fields"), list):
+            raise ValueError("Contract must contain a field list.")
         fields = tuple(Field(**field) for field in doc["fields"])
-    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError(f"Invalid Yellow Taxi schema contract: {path}") from exc
     valid = (
-        doc.get("contract_name")
-        and isinstance(doc.get("version"), int)
+        isinstance(doc.get("contract_name"), str)
+        and bool(doc["contract_name"].strip())
+        and type(doc.get("version")) is int
         and doc["version"] >= 1
         and doc.get("taxi_type") == "yellow"
     )
     valid = valid and fields and len({field.name for field in fields}) == len(fields)
     valid = valid and all(
-        field.name and field.type and type(field.required) is bool and type(field.nullable) is bool
+        isinstance(field.name, str) and bool(field.name.strip())
+        and isinstance(field.type, str) and bool(field.type.strip())
+        and type(field.required) is bool and type(field.nullable) is bool
         for field in fields
     )
     if not valid:
         raise ValueError("Invalid Yellow Taxi schema contract.")
+    try:
+        for field in fields:
+            pa.type_for_alias(field.type)
+    except ValueError as exc:
+        raise ValueError("Invalid Yellow Taxi schema contract type.") from exc
     return Contract(doc["contract_name"], doc["version"], doc["taxi_type"], fields)
 
 

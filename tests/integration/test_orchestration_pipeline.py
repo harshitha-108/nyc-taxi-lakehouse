@@ -269,3 +269,49 @@ def test_legacy_success_state_skips_without_new_schema_stage(
     assert calls == []
     loaded = store.load_period("yellow", period)
     assert loaded is not None and loaded.action == action and loaded.stages == legacy_stages
+
+
+@pytest.mark.parametrize(("stage", "callback", "replay_from"), [
+    ("ingestion", "ingest_taxi_data", "ingestion"),
+    ("bronze", "write_bronze_partition", "bronze"),
+    ("silver", "process_silver_partition", "silver"),
+    ("gold", "process_gold_partition", "gold"),
+    ("geographic", "process_geographic_enrichment", "geographic"),
+])
+def test_stage_failure_blocks_downstream_and_replay_recovers(
+    stage_harness, monkeypatch: pytest.MonkeyPatch,
+    stage: str, callback: str, replay_from: str,
+) -> None:
+    """An isolated fault fails its stage, preserves prior files, then replays narrowly."""
+    paths, period, calls, _ = stage_harness
+    store = StateStore(paths.state_dir)
+    preserved = paths.raw_dir / "prior-period.txt"
+    preserved.write_text("known-good", encoding="utf-8")
+    baseline = getattr(pipeline, callback)
+
+    def fail(*args: object, **kwargs: object) -> None:
+        calls.append(stage)
+        raise RuntimeError(f"injected {stage} failure")
+
+    monkeypatch.setattr(pipeline, callback, fail)
+    with pytest.raises(PipelineError, match=f"injected {stage} failure"):
+        run_period(period, taxi_type="yellow", mode="replay", from_stage="ingestion",
+                   run_id=f"failed-{stage}", paths=paths, store=store)
+    failed = store.load_period("yellow", period)
+    assert failed is not None and failed.status == "FAILED"
+    assert failed.stages[stage]["status"] == "FAILED"
+    assert all(failed.stages[later]["status"] == "PENDING"
+               for later in pipeline.STAGES[pipeline.STAGE_INDEX[stage] + 1:])
+    assert preserved.read_text(encoding="utf-8") == "known-good"
+
+    monkeypatch.setattr(pipeline, callback, baseline)
+    calls.clear()
+    recovered = run_period(period, taxi_type="yellow", mode="replay",
+                           from_stage=replay_from, run_id=f"recovered-{stage}",
+                           paths=paths, store=store)
+    assert recovered.status == "SUCCESS"
+    assert calls[0] == ("ingestion" if stage == "ingestion" else
+                        "schema_validation" if stage == "bronze" else stage)
+    if stage in {"silver", "gold", "geographic"}:
+        assert "bronze" not in calls
+    assert preserved.read_text(encoding="utf-8") == "known-good"
