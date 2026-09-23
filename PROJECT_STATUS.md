@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 12 — Pipeline Reliability, Failure Recovery & Advanced Testing (PASS)
+Phase 13 — CI/CD Quality Gates & Automated Validation (PASS)
 
 ## Completed
 
@@ -63,6 +63,10 @@ Phase 12 — Pipeline Reliability, Failure Recovery & Advanced Testing (PASS)
   reconciliation across local Parquet, Iceberg, and PostgreSQL serving
 - MinIO/Iceberg snapshot recovery and PostgreSQL five-mart rollback/retry tests using isolated state
 - Airflow task-state failure matrix and dashboard definition preflight/regression tests
+- GitHub Actions `CI` workflow with separate Quality, Fast Tests, Integration Tests, and Docker Build
+  jobs; push-to-main and pull-request triggers, branch/PR concurrency, and read-only permissions
+- Explicit pytest `integration`, `docker`, and `heavy` markers, plus a tracked-file hygiene guard
+- Fresh-run CI service configuration, MinIO/PostgreSQL health-gated integration, and failure diagnostics
 
 ## Current Architecture
 
@@ -82,6 +86,9 @@ state files intact. Phase 11 adds a separate PostgreSQL analytics database conta
 Gold-derived marts, plus a third PostgreSQL database for Superset metadata. The serving publisher
 reads the validated local Gold Parquet path in both filesystem and Iceberg modes, with one five-table
 transaction per source period. Superset queries serving tables only. dbt is not implemented.
+GitHub Actions now checks the repository and image build on every main push and pull request. Its
+integration job starts fresh MinIO/PostgreSQL services without launching Airflow scheduler/webserver
+or Superset; no historical NYC data is used. There is no production deployment target or CD job.
 
 ## Environment
 
@@ -104,6 +111,8 @@ transaction per source period. Superset queries serving tables only. dbt is not 
   owner roles; serving business tables are under the `analytics` schema
 - Apache Superset 6.0.0 image (Python 3.10.19) with `psycopg2-binary==2.9.10`; UI on
   `127.0.0.1:8088`, PostgreSQL-backed metadata, and local in-memory rate limiting
+- Hosted CI: Python 3.11, Temurin Java 17 for Spark tests, GitHub-hosted Ubuntu runner; Python
+  dependencies come from `requirements.txt`, with pip caching keyed by that file in Fast Tests
 
 ## How to Run
 
@@ -142,6 +151,16 @@ docker compose --profile airflow --profile dashboard up -d superset
 docker compose --profile airflow --profile dashboard run --rm --no-deps pipeline python scripts/bootstrap_dashboard.py
 docker compose --profile airflow --profile dashboard run --rm --no-deps pipeline python -m scripts.smoke_dashboard
 docker compose --profile airflow --profile dashboard run --rm --no-deps --user airflow -e RUN_ICEBERG_INTEGRATION=1 -e RUN_SERVING_INTEGRATION=1 -e RUN_SUPERSET_INTEGRATION=1 airflow-init pytest -p no:cacheprovider -q
+```
+
+Phase 13 developer checks (use the running local MinIO/PostgreSQL services for service tests):
+
+```powershell
+docker compose --profile airflow --profile dashboard run --rm --no-deps pipeline ruff check src tests airflow scripts
+docker compose --profile airflow --profile dashboard config --quiet
+python scripts/check_repository_hygiene.py
+docker compose --profile airflow run --rm --no-deps pipeline pytest -p no:cacheprovider -m "not docker and not heavy" -q
+docker compose --profile airflow run --rm --no-deps --user airflow -e RUN_ICEBERG_INTEGRATION=1 -e RUN_SERVING_INTEGRATION=1 airflow-init pytest -p no:cacheprovider -m "docker and not heavy" -q
 ```
 
 ## Validation Completed
@@ -320,6 +339,23 @@ docker compose --profile airflow --profile dashboard run --rm --no-deps --user a
   scope passed static tests. A signed-in Chrome check displayed all ten rendered charts; the Top
   Pickup Zones chart displayed a row-limit warning while still rendering.
 
+### Phase 13 hosted CI validation
+
+- The first pushed workflow revealed a CI-only Compose profile error before integration tests ran.
+  Commit `84dde5a` corrected that one command; the failure was reproduced locally and was not a
+  test assertion failure.
+- A fresh isolated Compose project brought MinIO and PostgreSQL to healthy status, initialized its
+  bucket and databases, migrated Airflow metadata, and passed all 19 selected service tests in
+  83.83 seconds. Its three temporary volumes and two containers were removed afterward.
+- [Hosted CI run 35866909898](https://github.com/harshitha-108/nyc-taxi-lakehouse/actions/runs/35866909898)
+  completed successfully on commit `84dde5a` in about 3 minutes 57 seconds: Quality 30 seconds,
+  Fast Tests 74 seconds, Docker Build 47 seconds, Integration Tests 156 seconds (job durations from
+  GitHub timestamps). All four jobs passed. No historical NYC data or live TLC call was required.
+- The Quality job passed Ruff, workflow YAML parse, shell syntax, Compose configuration, tracked-file
+  hygiene, and a meaningful changed-line whitespace check. Fast Tests cover contract decisions and
+  dashboard-definition regression, including `dist_bar`; Integration Tests cover a real Airflow DAG,
+  MinIO/Iceberg publication/recovery, PostgreSQL serving rollback, and five-mart atomicity.
+
 ## Tests
 
 - Focused Phase 12 reliability files: 75 passed in 39.11 seconds.
@@ -330,6 +366,11 @@ docker compose --profile airflow --profile dashboard run --rm --no-deps --user a
 - `docker compose --profile airflow --profile dashboard config --quiet`: passed.
 - Superset chart-data API: ten of ten charts executed and returned rows.
 - Spark environment smoke test: passed.
+- Phase 13 test inventory: 143 total (122 service-independent, 19 Docker/service integration,
+  two heavy). Registered `integration`, `docker`, and `heavy` markers; no unknown-marker warnings.
+- Hosted automatic CI: all four jobs passed on commit `84dde5a`.
+- Final complete local Docker regression after documentation: 143 passed in 408.44 seconds,
+  including both heavy tests and the previous 130-test baseline.
 
 ## Known Issues
 
@@ -357,6 +398,9 @@ date-range filter across all marts. The REST smoke verifies saved layout and all
   browser inspection in Phase 12 showed all ten charts, with a row-limit warning on Top Pickup
   Zones. No formal database-vs-lakehouse
 performance comparison was attempted.
+Phase 13 normal PR CI does not automate the two heavy tests, full Superset bootstrap/browser
+rendering, or the complete local full regression. These remain local/manual validations; the
+GitHub workflow does not deploy the application, publish an image, or enforce branch protection.
 
 ## Architecture Decisions
 
@@ -427,8 +471,15 @@ performance comparison was attempted.
   cross-mart reconciliation before commit. Roll back all five on any failure.
 - Bootstrap Superset via supported REST APIs and store its metadata separately; use a pinned image
   plus only the missing PostgreSQL driver, without Redis/Celery for this local dashboard.
+- Separate fast PR feedback from health-gated MinIO/PostgreSQL integration and Docker build jobs.
+  Use official GitHub actions, read-only repository permissions, and branch/PR concurrency.
+- Generate ignored CI-only service configuration from the safe template, and reject an existing
+  `.env`; never depend on a developer's secrets or historical data in hosted CI.
+- Guard tracked files against datasets, credentials, runtime databases, and logs; keep the two
+  expensive tests as explicit local/full-regression coverage rather than hiding their exclusion.
 
 ## Next Phase
 
-Phase 13 — CI/CD. It has **not** started. The next step is to run suitable unit, lint, and
-container-backed checks automatically in GitHub Actions without uploading datasets or credentials.
+Phase 14 — Performance/scalability measurement. It has **not** started. Establish reproducible
+baselines before changing partitioning, Spark execution, or data layout; report only measured
+improvements. The Phase 13 documentation-only CI run must pass before final push verification.

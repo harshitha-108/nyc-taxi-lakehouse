@@ -264,7 +264,7 @@ instead of Pandas so the same processing model can scale beyond this local month
 - [x] Phase 10 — Airflow Production Orchestration
 - [x] Phase 11 — Analytics Serving Layer & Mobility Dashboard
 - [x] Phase 12 — Pipeline Reliability, Failure Recovery & Advanced Testing
-- [ ] Phase 13 — CI/CD
+- [x] Phase 13 — CI/CD Quality Gates & Automated Validation
 - [ ] Phase 14 — Performance/scalability
 - [ ] Phase 15 — Final documentation/interview preparation
 
@@ -834,6 +834,63 @@ The focused run passed 75 tests; the final full Docker run passed 130 tests in 3
 the original Phase 1–11 coverage. Failure injection uses temporary directories, a dedicated
 Iceberg namespace, an isolated PostgreSQL schema, and Airflow stubs. No historical business
 partition was reprocessed to obtain this evidence.
+
+### Phase 13 — CI/CD Quality Gates & Automated Validation
+
+Phase 13 adds **continuous integration**, not production deployment. The `CI` workflow in
+`.github/workflows/ci.yml` runs on pull requests and pushes to `main`. It uses read-only repository
+permissions and cancels superseded runs for the same branch or PR. The four jobs form a practical
+validation ladder:
+
+```mermaid
+flowchart TB
+    CODE["Push to main / Pull request"] --> QUALITY["Quality<br/>Ruff, YAML, shell, Compose, Git hygiene"]
+    CODE --> FAST["Fast Tests<br/>Unit, schema contract, dashboard definitions"]
+    QUALITY --> BUILD["Docker Build<br/>Pipeline image only"]
+    QUALITY --> INTEGRATION["Integration Tests<br/>MinIO, Iceberg, PostgreSQL, Airflow DAG"]
+    FAST --> INTEGRATION
+    QUALITY --> RESULT["CI status"]
+    FAST --> RESULT
+    BUILD --> RESULT
+    INTEGRATION --> RESULT
+```
+
+The Quality job checks Ruff, parses workflow YAML, validates shell syntax and Compose configuration,
+checks tracked-file hygiene, and runs `git diff --check` against the PR base or preceding main
+commit. Fast Tests use Python 3.11 and Java 17 with dependency-keyed pip caching; they run the
+service-independent tests, including schema-contract behavior and the Superset chart-definition
+preflight that rejects obsolete `dist_bar` in favor of `echarts_timeseries_bar`. Integration Tests
+build the existing pipeline/Airflow images, start only MinIO and PostgreSQL, wait for health, then
+run the selected service tests. These cover the real Airflow DAG and task states, Iceberg/MinIO
+publication and recovery, PostgreSQL period replacement and five-mart rollback. Docker Build proves
+the pipeline image builds but publishes nothing.
+
+The registered pytest markers are `integration` (cross-component), `docker` (real services), and
+`heavy` (expensive, deliberately outside normal PR CI). The selected tiers are 122 fast tests,
+19 service tests, and two heavy tests. The heavy tests and the complete suite remain a local/manual
+regression gate, not a claimed GitHub PR check. No CI job downloads historical NYC Taxi files,
+calls the live TLC endpoint, starts Superset, or renders a browser dashboard. The workflow creates
+an ignored, ephemeral `.env` from `.env.example` with CI-only generated service passwords; it
+never reads a developer's `.env`. No datasets, databases, secrets, or images are uploaded. On
+integration failure, the job prints bounded service status/log diagnostics.
+
+To reproduce the principal checks from the repository root with Docker Desktop running and a
+local `.env` created from `.env.example` (the hygiene script also needs host Python and Git;
+GitHub CI provides both automatically):
+
+```powershell
+docker compose --profile airflow --profile dashboard run --rm --no-deps pipeline ruff check src tests airflow scripts
+docker compose --profile airflow --profile dashboard config --quiet
+python scripts/check_repository_hygiene.py
+docker compose --profile airflow run --rm --no-deps pipeline pytest -p no:cacheprovider -m "not docker and not heavy" -q
+docker compose --profile airflow run --rm --no-deps --user airflow -e RUN_ICEBERG_INTEGRATION=1 -e RUN_SERVING_INTEGRATION=1 airflow-init pytest -p no:cacheprovider -m "docker and not heavy" -q
+```
+
+The hosted [Phase 13 CI run](https://github.com/harshitha-108/nyc-taxi-lakehouse/actions/runs/35866909898)
+passed all four jobs on a fresh GitHub runner. Suitable future branch-protection checks are the
+actual job names: `Quality`, `Fast Tests`, `Integration Tests`, and `Docker Build`; branch
+protection has **not** been enabled here. The complete local Docker regression, including both
+heavy tests, passed 143 tests in 408.44 seconds; this is a separate local validation, not a PR job.
 
 ## Production mapping (reference only)
 
