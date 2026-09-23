@@ -423,11 +423,9 @@ docker compose --profile airflow run --rm --no-deps --user airflow -e RUN_ICEBER
 
 ## Known Issues
 
-The README roadmap retains historical placeholder labels for Phases 6–7, and older overview/reference
-text still describes MinIO and Airflow as planned; strict README edit rules preserve those earlier
-sections while the Phase 9–11 implementation subsections describe the current system. The pinned
-community MinIO image is archived and should not be treated as a
-production security baseline. SQLite JDBC is a local single-writer catalog, and the eight tables do
+The README now presents the implemented system first, with Phase 1–14 validation evidence in
+`docs/implementation-history.md`. The pinned community MinIO image is archived and should not be
+treated as a production security baseline. SQLite JDBC is a local single-writer catalog, and the eight tables do
 not share one cross-table transaction. A proposed real March Bronze overwrite was blocked by the
 safety review because an earlier project instruction reserved March replay for Silver onward; no
 March Bronze commit occurred. Real January double-load and an isolated two-month overwrite
@@ -538,8 +536,8 @@ and Git while workflow YAML parsing ran in the Airflow image; hosted Quality als
   shuffle partitions, Silver file layout, Iceberg period partitioning, broadcast Taxi Zone join,
   and PostgreSQL indexes because measured evidence did not justify changing them.
 
-## Next Phase
+## Next work
 
-Phase 15 — Final documentation and interview preparation. It has **not** started. Consolidate the
-completed system narrative and interview explanations without claiming unmeasured scale or cloud
-deployment. Do not begin Phase 15 until Phase 14 is reviewed.
+No additional engineering phase is in progress. Potential extensions such as Kafka/CDC, dbt, a
+production-grade catalog, and cloud deployment remain unimplemented; none are required to run or
+validate the current local batch pipeline.

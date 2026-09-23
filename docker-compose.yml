@@ -37,7 +37,7 @@ services:
     command: -c 'i=0; until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do i=$$((i+1)); [ "$$i" -lt 30 ] || exit 1; sleep 2; done; mc mb --ignore-existing "local/$$MINIO_BUCKET"'
   airflow-postgres:
     image: postgres:16-alpine
-    profiles: ["airflow"]
+    profiles: ["airflow", "dashboard"]
     env_file: [.env.example, .env]
     volumes:
       - airflow-postgres-data:/var/lib/postgresql/data
@@ -50,6 +50,7 @@ services:
     build:
       context: .
       target: pipeline
+    profiles: ["airflow", "dashboard"]
     env_file: [.env.example, .env]
     working_dir: /workspace
     volumes:

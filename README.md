@@ -1,983 +1,152 @@
 # NYC Taxi Lakehouse
 
-A local, production-style data engineering project that incrementally builds a lakehouse for official
-NYC Taxi & Limousine Commission (TLC) Yellow Taxi trip records. The project is designed to demonstrate
-reproducible ingestion, Spark processing, data quality, orchestration, and analytics without requiring
-paid cloud services.
+A local batch lakehouse for official [NYC TLC Yellow Taxi trips](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page). It turns monthly source files into quality-checked, analytics-ready data: PySpark preserves and validates the trips, Iceberg on MinIO provides a transactional lakehouse publication path, and PostgreSQL serves compact marts to Superset. Airflow coordinates the stages; automated tests and GitHub Actions check failure handling and correctness. No paid cloud account is required.
 
-## Project overview
+## What this project demonstrates
 
-The implemented system downloads official TLC Yellow Taxi Parquet data into a local raw layer and
-creates a source-aligned Bronze Parquet partition. Future phases will add cleaned Silver data and Gold
-analytics; those layers are not implemented yet.
-
-`PROJECT_STATUS.md` records the active development state. This README is cumulative technical
-documentation for functionality that has been implemented and validated.
+| Concern | Implemented approach |
+| --- | --- |
+| Incremental processing | Monthly source periods, completed-period skip, bounded backfill, explicit stage replay |
+| Data contracts and quality | Metadata-only source schema gate before Bronze; row-level Silver rules and quarantine after Bronze |
+| Lakehouse storage | Local Parquet by default; optional period-scoped Iceberg snapshots in MinIO |
+| Operational reliability | Safe partial downloads and partition promotion, task failure propagation, reconciliation, transactional serving publication |
+| Analytics | Five Gold marts, PostgreSQL serving, ten-chart Superset dashboard |
+| Validation | Local 155-test full regression, four GitHub Actions CI jobs, measured performance experiments |
 
 ## Architecture
 
 ```mermaid
 flowchart TB
-    TLC["NYC TLC Yellow Taxi<br/>Trip Records"] --> ING["Python Ingestion<br/>Incremental + Idempotent"]
-    ING --> RAW["Raw Layer<br/>Source-preserved Parquet"]
-    RAW --> BRONZE["Bronze Layer<br/>Spark + Technical Lineage"]
-    BRONZE --> SILVER["Silver Layer<br/>Standardization + Quality Rules"]
-    SILVER -->|Valid| VALID["Valid Silver"]
-    SILVER -->|Rejected| QUARANTINE["Quarantine<br/>Rejected + Failure Reasons"]
-    VALID --> GOLD["Gold Analytics<br/>Analytics-ready Aggregates"]
-    GOLD --> DAILY["Daily Trip Metrics"]
-    GOLD --> HOURLY["Hourly Demand"]
-    GOLD --> LOCATION["Pickup Location Performance"]
-    GOLD --> PAYMENT["Payment Type Summary"]
-    ZONES["Official TLC<br/>Taxi Zone Lookup"] --> REF["Reference Data Ingestion"] --> DIM["Validated Taxi Zone Dimension"]
-    LOCATION --> GEO["Geographic Enrichment"]
-    DIM --> GEO
-    GEO --> ZONEGOLD["Pickup Zone Performance"]
-    ORCH["Multi-Month Pipeline Orchestrator<br/>Incremental • Backfill • Replay • Retry"]
-    ORCH -. controls .-> ING
-    ORCH -. controls .-> BRONZE
-    ORCH -. controls .-> SILVER
-    ORCH -. controls .-> GOLD
-    ORCH -. controls .-> GEO
+    TLC["Official TLC Yellow Taxi Parquet"] --> ING["Python ingestion"] --> RAW["Raw: source-preserved"]
+    RAW --> GATE["Schema contract gate"] --> BR["Bronze: source + lineage"] --> SI["Silver: standardize + validate"]
+    SI -->|Valid| V["Valid Silver"] --> GOLD["Gold: monthly analytics marts"]
+    SI -->|Rejected| Q["Quarantine: failure reasons"]
+    Z["Official TLC Taxi Zone lookup"] --> REF["Validated zone dimension"]
+    GOLD --> LOC["Pickup location mart"]
+    REF --> GEO["Geographic enrichment"]
+    LOC --> GEO --> ZONE["Pickup zone mart"]
+    GOLD --> PUB["Optional Iceberg publication"] --> MINIO["Iceberg tables on MinIO"]
+    ZONE --> PUB
+    GOLD --> SERVE["PostgreSQL: five serving marts"]
+    ZONE --> SERVE --> BI["Superset dashboard"]
+    AIR["Airflow: monthly tasks, retries, reconciliation"] -. orchestrates .-> ING
+    AIR -. orchestrates .-> SI
+    AIR -. orchestrates .-> SERVE
 ```
 
-The eventual local platform may add MinIO, Airflow, dbt Core, an analytics database, Superset,
-data-quality checks, and CI. Kafka and Debezium are intentionally deferred until the batch pipeline is
-reliable.
+Raw retains downloaded files; Bronze preserves source business columns and adds lineage; Silver creates valid and quarantined partitions; Gold aggregates **only valid Silver**. The optional Iceberg path publishes validated local outputs to MinIO—MinIO stores objects while Iceberg manages table snapshots. Airflow and the CLI orchestrator control work; neither is a business-data store. The five Gold marts are daily trips, hourly demand, pickup-location performance, payment-type summary, and zone-enriched pickup performance. The complete [stage-by-stage record](docs/implementation-history.md) explains how the system evolved.
 
-## Technology stack
+## Dataset and scale
 
-| Component | Current use |
+Six months of Yellow Taxi source data (`2024-01` through `2024-06`) were processed locally. The official monthly Parquet files and Taxi Zone CSV are downloaded by code, not committed to Git.
+
+| January–June 2024 | Rows |
+| --- | ---: |
+| Bronze source-aligned trips | 20,332,093 |
+| Valid Silver trips | 20,015,099 |
+| Quarantined trips | 316,994 |
+
+Every month satisfies **Bronze = valid Silver + quarantine**. Each Gold and PostgreSQL mart's summed trip count reconciles to valid Silver for its source period. These are measured local results, not an enterprise-scale or live-streaming claim. TLC `total_amount` is used as a trip-charge/revenue-like metric, not as company accounting revenue. See [validation evidence](PROJECT_STATUS.md) for monthly and downstream checks.
+
+## Engineering highlights
+
+- **Period-level idempotency:** a valid raw file is re-used; completed monthly periods skip work; replay replaces only requested source-month partitions. Temporary local writes are read back before promotion, preserving prior outputs on failure.
+- **Two different quality boundaries:** the versioned 19-column source contract detects structural changes using Parquet metadata **before Bronze**; Silver's eight business rules classify individual records **after Bronze**. Breaking contracts stop processing; rejected rows retain all failure reasons rather than disappearing.
+- **Reference enrichment:** the authoritative TLC Taxi Zone CSV is key-validated and broadcast-joined to location aggregates. Unmatched location IDs remain visible and are counted rather than assigned invented geography.
+- **Publication semantics:** Iceberg replaces source periods table by table with snapshots; its eight tables do **not** share a cross-table transaction. PostgreSQL replaces all five small serving marts for one period in **one** transaction, with value and count checks before commit.
+- **Orchestration:** a stateful CLI supports incremental, backfill, and stage-scoped replay. The paused-by-default monthly Airflow DAG calls the same processors in nine visible tasks; a failure blocks dependent tasks. XCom carries metadata, not trip data.
+
+## Data quality and reliability
+
+Silver rejects missing pickup/dropoff timestamps, reversed timestamp order, negative distance/fare/total amounts, and missing or non-positive pickup/dropoff location IDs. Zero-distance trips and null passenger counts are not rejected solely for those values. January 2024 reconciled 2,964,624 Bronze rows into 2,927,000 valid and 37,624 quarantined rows; rule counts can overlap because one trip may fail several rules.
+
+Operational checks cover download interruption, breaking schema, local partition-write failure, unavailable MinIO, failed Iceberg commit, failed PostgreSQL publication, and reconciliation drift. An Iceberg failure leaves the prior committed snapshot readable and does not silently fall back to filesystem mode. A serving insert failure rolls back all five marts for that source period. Isolated fault-injection tests verify recovery without rewriting historical January–June files; [details and caveats](docs/implementation-history.md) are available for deeper review.
+
+## Analytics and dashboard
+
+Gold Parquet is the source for the five PostgreSQL serving marts; Superset queries PostgreSQL, not trip-level Raw or Silver. The `NYC Urban Mobility Overview` dashboard has ten saved charts across trips, trip charges, distance/duration, pickup demand, geography, and payment mix. Its REST bootstrap is idempotent. All ten chart-data calls returned data, and a signed-in local browser check showed all ten charts; “Top Pickup Zones” displayed a row-limit warning. Example analytical queries are in [serving_examples.sql](sql/serving_examples.sql). There is no claim of real-time analytics.
+
+## Performance engineering
+
+For the **January 2024 Gold workload**, persisted Silver input took a **59.92 s median** versus **36.36 s** after removing persistence from production code: an observed **39.31% lower local median**. The three measured production runs were 37.296, 36.362, and 33.899 seconds. This is a single-machine Docker result with warm/mixed caches and separate similarly warmed sessions; it is workload-specific, not a general claim that caching hurts Spark. Business-value digests, geography, Iceberg/serving publication, and recovery checks matched after the change.
+
+Other measured candidates were rejected: changing shuffle partitions lacked a reliable gain; two-file Silver repartitioning was slower and larger; an additional PostgreSQL index saved only 0.368 ms on a 1,550-row mart. Existing Iceberg January filtering already reduced planned scan tasks from six to one, and the small Taxi Zone dimension already used a broadcast join. [Experiment runs, plans, and decisions](docs/implementation-history.md#phase-14--measured-performance-work) preserve the evidence without presenting microbenchmarks as universal speedups.
+
+## Testing and CI
+
+The complete local Docker regression passed **155 tests** after the Phase 14 change, including heavy service/recovery checks. The [`CI` workflow](.github/workflows/ci.yml) runs on pushes to `main` and pull requests:
+
+| Job | Gate |
 | --- | --- |
-| Python 3.11 | Ingestion package and CLI |
-| Docker Compose | Reproducible local development environment |
-| Java 17 | PySpark runtime dependency |
-| PySpark 3.5.3 | Local Bronze processing engine |
-| PyArrow 18.1.0 | Lightweight Parquet metadata validation |
-| pytest and Ruff | Automated tests and linting |
-| Git and GitHub | Versioned, reviewable project history |
+| Quality | Ruff, workflow YAML, Bash syntax, Compose configuration, Git hygiene and whitespace |
+| Fast Tests | Service-independent unit/contract/dashboard-definition tests on Python 3.11 and Java 17 |
+| Docker Build | Builds the pipeline image; does not publish it |
+| Integration Tests | Fresh MinIO/PostgreSQL, real Airflow DAG, Iceberg and serving tests without historical TLC data |
 
-## Repository structure
+CI is **validation, not deployment**. Full-data benchmarks, two heavy tests, Superset bootstrap, and browser visual checks are local/manual rather than PR gates. The [latest completed CI evidence before this documentation update](https://github.com/harshitha-108/nyc-taxi-lakehouse/actions/runs/35905605539) passed all four jobs.
 
-```text
-src/nyc_taxi_lakehouse/  Reusable Python package
-├── ingestion/           Official TLC raw-data ingestion
-├── bronze/              Source-aligned Spark Bronze processing
-configs/                 Versioned, non-secret configuration
-data/                    Local runtime data; generated content is ignored
-tests/                   Unit and integration tests
-docs/architecture/       Architecture documentation
-scripts/                 Developer utilities
-```
+## Run locally
 
-The project uses a `src/` layout so command-line jobs, tests, and future orchestration import the same
-package code instead of relying on loose scripts.
+Use Docker Desktop with Docker Compose. The pipeline image supplies **Python 3.11, Java 17, PySpark 3.5.3, and pinned Python dependencies** from `requirements.txt`; no host Spark install is needed. Commands below use PowerShell from the repository root. `.env.example` contains **local-development-only** placeholder credentials. Copy it to an ignored `.env`, change passwords if exposing services beyond localhost, and never commit it.
 
-## Getting started
-
-Docker Desktop must be running. Create local configuration from the safe template, build the image, and
-run the current checks:
+### Quick validation — no NYC download or running services
 
 ```powershell
+git clone https://github.com/harshitha-108/nyc-taxi-lakehouse.git
+Set-Location nyc-taxi-lakehouse
 Copy-Item .env.example .env
-docker compose build
-docker compose run --rm pipeline python --version
-docker compose run --rm pipeline pytest
-docker compose run --rm pipeline ruff check src tests
-```
-
-The validated container environment is Python 3.11.16, OpenJDK 17.0.20.1, PySpark 3.5.3, and PyArrow
-18.1.0.
-
-## Completed: project foundation
-
-Phase 1 established the project’s reproducible local foundation:
-
-- Docker-based Python, Java, and PySpark environment, avoiding a host Python/Spark dependency.
-- A local SparkSession smoke test that started Spark, inspected a DataFrame schema, and completed count
-  and filter actions successfully.
-- pytest and Ruff configuration, including a package-import test.
-- `.env.example` for safe local configuration; actual `.env` is ignored and excluded from Docker build
-  contexts.
-- Git repository on `main`, with the project published to GitHub.
-
-## Completed: NYC TLC Yellow Taxi ingestion
-
-### Official source and parameterization
-
-The ingestion module downloads official TLC-hosted monthly Yellow Taxi Parquet files. TLC publishes the
-data on its [Trip Record Data page](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page) using
-this direct-file pattern:
-
-```text
-https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_<year>-<month>.parquet
-```
-
-The CLI accepts `--taxi-type`, `--year`, `--month`, `--destination-dir`, and `--force`; production logic
-does not hard-code a development month. Yellow Taxi is the only enabled taxi type at this stage.
-
-```powershell
-docker compose run --rm pipeline python -m nyc_taxi_lakehouse.ingestion.nyc_taxi --year 2024 --month 1
-```
-
-### Raw-data layout and lineage
-
-Raw source data is organized by taxi type, year, and month so each source period remains independently
-addressable as later processing becomes partition-aware:
-
-```text
-data/raw/
-├── yellow/2024/01/yellow_tripdata_2024-01.parquet
-└── metadata/yellow/2024/01/yellow_tripdata_2024-01.json
-```
-
-For every successful download, the generated JSON manifest records the dataset, taxi type, year/month,
-official source URL, local runtime path, filename, UTC download timestamp, and byte size.
-
-### Reliable download behavior
-
-The downloader uses Python logging, a bounded three-attempt retry strategy, HTTP error handling, and
-clear exceptions for invalid requests, network failures, and filesystem errors. It writes downloads to a
-`.part` file and validates it before atomically promoting it to the final filename, preventing an
-interrupted download from appearing successful.
-
-Validation confirms that the file exists, is non-empty, and exposes readable Parquet footer metadata
-through PyArrow without loading the full dataset into memory.
-
-The ingestion operation is idempotent at the source-file level: a rerun validates the final existing
-Parquet file and skips the network download unless `--force` is supplied. `--force` explicitly replaces
-the local file when required.
-
-### Validated development example
-
-Yellow Taxi `2024-01` was downloaded from the official source and validated successfully:
-
-- File: `yellow_tripdata_2024-01.parquet`
-- Raw size: 49,961,641 bytes
-- Metadata manifest: generated under `data/raw/metadata/yellow/2024/01/`
-- Rerun: skipped the valid existing file without re-downloading it
-
-### Testing and Git safety
-
-The automated test suite uses mocked network responses and tiny synthetic Parquet files; it never needs
-to download the TLC dataset. Tests cover URL and path construction, invalid months, skip and force
-behavior, partial-file cleanup, invalid-download rejection, and manifest generation.
-
-Generated raw Parquet files, manifests, partial files, logs, Spark temporary output, Docker volumes,
-virtual environments, and `.env` are excluded from Git. The repository contains only directory
-placeholders under `data/`.
-
-## Completed: Bronze data layer
-
-### Purpose and source preservation
-
-The Bronze job reads the successful raw source file with PySpark and preserves every source business
-column, value, and Spark-inferred type. It deliberately performs no business cleaning, deduplication,
-timestamp repair, null handling, or quality-based rejection; those responsibilities begin in Silver.
-
-The validated `2024-01` Yellow Taxi source contains 2,964,624 rows and 19 columns:
-
-```text
-VendorID, tpep_pickup_datetime, tpep_dropoff_datetime, passenger_count,
-trip_distance, RatecodeID, store_and_fwd_flag, PULocationID, DOLocationID,
-payment_type, fare_amount, extra, mta_tax, tip_amount, tolls_amount,
-improvement_surcharge, total_amount, congestion_surcharge, Airport_fee
-```
-
-### Bronze layout and lineage
-
-Run the Bronze job for one raw source period with:
-
-```powershell
-docker compose run --rm pipeline python -m nyc_taxi_lakehouse.bronze.processor --taxi-type yellow --year 2024 --month 1
-```
-
-The output uses a Hive-style, month-granular layout:
-
-```text
-data/bronze/yellow/year=2024/month=01/
-└── part-*.snappy.parquet
-```
-
-Year/month directories allow later partition-aware reads while avoiding high-cardinality partitions such
-as trip IDs or pickup timestamps. The current approximately 50 MB development input is coalesced to one
-Parquet part file to avoid a local small-file fan-out; this policy can be tuned after benchmarking at a
-larger scale.
-
-Bronze adds five technical lineage columns, separate from TLC business fields:
-
-- `_bronze_ingested_at` — one UTC timestamp shared by the processing run
-- `_source_file` — source Parquet filename
-- `_source_taxi_type`
-- `_source_year`
-- `_source_month`
-
-### Idempotency and safe writes
-
-The job writes Spark output to a generated temporary sibling directory, reads it back, and validates
-row preservation, source columns, lineage columns, and lineage values. Only after validation succeeds
-does it replace the requested `year/month` target partition. If promotion fails, a prior target is kept
-as a rollback path. A rerun replaces only the same year/month partition rather than appending duplicate
-rows or touching unrelated months.
-
-### Validated development example
-
-Bronze was run against the existing Yellow Taxi `2024-01` raw file:
-
-- Source: 49,961,641 bytes, 2,964,624 rows, 19 columns
-- Bronze target: `data/bronze/yellow/year=2024/month=01/`
-- Bronze result: 2,964,624 rows, 24 columns, 5 technical columns
-- Parquet payload: 61,639,367 bytes in 1 part file
-- Final validation run: approximately 24 seconds
-- Idempotency rerun: retained one `month=01` partition and one part file; row count stayed 2,964,624
-
-### Spark design notes
-
-Spark transformations such as adding lineage columns are lazy; actions such as `count()` and writing
-Parquet trigger execution. This job uses counts intentionally for operational validation and never
-collects the source dataset to the driver. Spark DataFrame partitions are execution units, while the
-`year=.../month=...` directories are data-layout partitions used for future pruning. PySpark is used
-instead of Pandas so the same processing model can scale beyond this local monthly source.
-
-## Engineering decisions
-
-- **Parquet over CSV:** columnar storage supports efficient later reads through column and predicate
-  pruning.
-- **PySpark:** a distributed processing engine suitable for growth beyond a small local sample; it was
-  validated in the local Docker environment before transformation work begins.
-- **Raw-layer lineage:** a small per-file manifest is sufficient now and avoids prematurely introducing
-  a metadata platform.
-- **Local-first architecture:** Docker and open-source libraries keep the project reproducible and free
-  to run; cloud mappings below are reference architecture, not deployed services.
-
-## Implementation roadmap
-
-- [x] Phase 1 — Project foundation
-- [x] Phase 2 — NYC Taxi ingestion
-- [x] Phase 3 — Bronze layer
-- [x] Phase 4 — Silver layer
-- [x] Phase 5 — Gold layer
-- [x] Phase 6 — Lakehouse/object storage
-- [x] Phase 7 — Containerization improvements
-- [x] Phase 8 — Schema Evolution & Data Contracts
-- [x] Phase 9 — MinIO + Apache Iceberg lakehouse storage
-- [x] Phase 10 — Airflow Production Orchestration
-- [x] Phase 11 — Analytics Serving Layer & Mobility Dashboard
-- [x] Phase 12 — Pipeline Reliability, Failure Recovery & Advanced Testing
-- [x] Phase 13 — CI/CD Quality Gates & Automated Validation
-- [x] Phase 14 — Performance Engineering, Query Optimization & Benchmarking
-- [ ] Phase 15 — Final documentation/interview preparation
-
-## Implementation Details
-
-### Phase 1 — Project Foundation
-
-Phase 1 established a reproducible, local-first engineering baseline: Python 3.11, a `src/`-based
-package, Docker Compose, Java 17, PySpark 3.5.3, dependency configuration, pytest, and Ruff. The
-Docker image was validated with a real local SparkSession smoke test. Configuration is kept outside
-source code through `.env.example`; the real `.env` is ignored by Git. The repository also includes
-the initial data-layer directory scaffold and Git/GitHub setup. The `src/` layout keeps reusable
-pipeline code separate from tests and scripts, while Docker makes the environment reproducible for
-another developer without a host Spark installation.
-
-### Phase 2 — NYC Taxi Ingestion
-
-The ingestion module downloads official NYC Taxi & Limousine Commission Yellow Taxi Parquet files for
-a requested year and month. The validated development example is Yellow Taxi 2024-01:
-`yellow_tripdata_2024-01.parquet` (49,961,641 bytes). It is stored at
-`data/raw/yellow/2024/01/`, with its lineage manifest under
-`data/raw/metadata/yellow/2024/01/`.
-
-Run one month with:
-
-```powershell
-docker compose run --rm pipeline python -m nyc_taxi_lakehouse.ingestion.nyc_taxi --year 2024 --month 1
-```
-
-The CLI constructs the official TLC URL, streams the download to a temporary `.part` file, validates
-non-zero size and the Parquet footer with PyArrow, then atomically promotes the completed file.
-Structured logging, HTTP/network error handling, and bounded retries make failures explicit. A valid
-existing file is revalidated and skipped, which was confirmed by a second real execution. Generated
-raw data and manifests are excluded from Git. Phase 2 had 9 passing automated tests.
-
-### Phase 3 — Bronze Layer
-
-Bronze creates a source-aligned Spark representation of each raw file: Raw Parquet → PySpark Bronze
-processor → source columns preserved plus technical lineage → partitioned Bronze Parquet. For Yellow
-Taxi 2024-01, the source had 2,964,624 rows, 19 columns, and 49,961,641 bytes. Bronze retained all
-2,964,624 rows and source columns, added five columns, and wrote one 61,639,367-byte Snappy Parquet
-part file in approximately 24 seconds.
-
-The technical fields are `_bronze_ingested_at` (the run timestamp), `_source_file` (source filename),
-`_source_taxi_type`, `_source_year`, and `_source_month`. Output uses
-`data/bronze/yellow/year=2024/month=01/`; month-level partitions keep independently processable
-periods small enough for partition pruning without over-partitioning. A temporary sibling write is
-read back before replacing only the target partition. Reprocessing January preserved the final count
-of 2,964,624 rows without creating duplicate data. Bronze intentionally does not clean business
-values; that is the responsibility of Silver. Phase 3 completed with 12 passing tests and Ruff.
-
-### Phase 4 — Silver Layer
-
-Silver standardizes Bronze columns for analytics, preserves all Bronze lineage, adds
-`_silver_processed_at`, and derives `trip_duration_minutes` and `pickup_date`. The actual TLC naming
-changes are `VendorID` → `vendor_id`, `RatecodeID` → `rate_code_id`, `PULocationID` →
-`pickup_location_id`, `DOLocationID` → `dropoff_location_id`, and `Airport_fee` → `airport_fee`.
-Monetary fields are represented as fixed-scale decimals to avoid floating-point presentation issues.
-
-The processor evaluates missing pickup/dropoff timestamps, invalid timestamp order, negative trip
-distance, negative fare amount, negative total amount, and missing/non-positive pickup or dropoff
-location IDs. Invalid records are retained in
-`data/quarantine/silver/yellow/year=2024/month=01/` with an array of `_quality_failure_reasons`;
-valid records are written to `data/silver/yellow/year=2024/month=01/`. The January 2024 run reconciled
-2,964,624 Bronze rows into 2,927,000 valid rows (98.7309%) and 37,624 rejected rows (1.2691%). Rule
-failure counts were 56 invalid timestamp orders, 37,448 negative fares, and 35,504 negative totals;
-all other implemented rule counts were zero. Counts can overlap because one quarantined record may
-have multiple reasons.
-
-Run Silver with:
-
-```powershell
-docker compose run --rm pipeline python -m nyc_taxi_lakehouse.silver.processor --taxi-type yellow --year 2024 --month 1
-```
-
-Both valid and quarantine partitions are written to temporary directories, validated by Spark
-read-back, and promoted together with rollback protection. A rerun produced the same counts and
-replaced only the January outputs, demonstrating partition-level idempotency. The final run produced
-one Silver part file (65,398,600 bytes) and one quarantine part file (897,649 bytes). Phase 4
-completed with 15 passing tests and Ruff.
-
-### Phase 5 — Gold Analytics Layer
-
-Gold creates analytics-ready marts exclusively from the valid Silver partition; it never reads Raw,
-Bronze, or quarantine data. `total_revenue` is the sum of TLC `total_amount`, documented as a
-revenue-like trip-charge metric rather than company accounting revenue. Four purpose-built Parquet
-datasets are produced for each taxi type/year/month:
-
-- `daily_trip_metrics` — one row per `pickup_date`, with trip counts, total trip charges, fare/total
-  averages, distance, duration, and tip metrics.
-- `hourly_demand` — one row per `pickup_date` and `pickup_hour`, with trip counts, total trip charges,
-  average distance, and average duration.
-- `pickup_location_performance` — one row per `pickup_location_id`, with trip counts, total trip
-  charges, average trip charge, distance, duration, and total tips.
-- `payment_type_summary` — one row per numeric `payment_type`, with trip/revenue distribution,
-  percentages, and tip metrics.
-
-For Yellow Taxi 2024-01, 2,927,000 valid Silver trips produced 35 daily rows, 749 hourly rows, 260
-pickup-location rows, and 5 payment-type rows. Each mart reconciled its `trip_count` total to the
-Silver input. The local outputs contain one Snappy Parquet part file each: 6,507 bytes for daily,
-22,060 bytes for hourly, 13,863 bytes for pickup location, and 3,948 bytes for payment type. Payment
-trip and revenue percentages each reconciled to 100% within floating-point tolerance.
-
-Every Gold row carries `_gold_processed_at`, `_source_taxi_type`, `_source_year`, and `_source_month`.
-Gold uses temporary writes, Spark read-back validation, and coordinated replacement of all four target
-partitions, so a rerun replaces only that month rather than appending duplicate aggregates. The first
-January run took 49.17 seconds; a rerun retained the same results. Run the full Gold set with:
-
-```powershell
-docker compose run --rm pipeline python -m nyc_taxi_lakehouse.gold.processor --taxi-type yellow --year 2024 --month 1
-```
-
-Phase 5 completed with 18 passing tests and Ruff.
-
-### Phase 6 — Taxi Zone Reference Data & Geographic Enrichment
-
-Phase 6 adds the official TLC Taxi Zone Lookup as a separately managed reference dataset, enabling
-location analytics to use `location_id`, `borough`, `zone`, and `service_zone` rather than only numeric
-IDs. It is downloaded from the TLC-hosted
-`https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv` endpoint into ignored local runtime
-storage at `data/reference/taxi_zones/taxi_zone_lookup.csv`. A generated manifest captures source URL,
-retrieval time, local path, file size, and validation outcome.
-
-The lookup is validated as readable CSV with required columns, integer/non-null/unique `LocationID`, and
-non-blank Borough and Zone values before it is used. The January validation downloaded 12,331 bytes and
-found 265 rows, 265 unique IDs, zero duplicates, and zero null/blank counts for LocationID, Borough,
-Zone, and service_zone. Run its independent ingestion with:
-
-```powershell
-docker compose run --rm pipeline python -m nyc_taxi_lakehouse.reference.taxi_zones
-```
-
-`pickup_zone_performance` is a new Gold mart that enriches—without replacing—the existing
-`pickup_location_performance` contract. Its grain remains one row per `pickup_location_id`, with
-borough, zone, and service_zone appended. The small 265-row dimension is broadcast and left-joined to
-the 260-row location mart, avoiding a fact-side shuffle while preserving unmatched keys as null
-geography. The job records matched/unmatched IDs and their affected trip counts rather than fabricating
-an “Unknown” geography.
-
-For Yellow Taxi 2024-01, all 260 processed location IDs matched (100%), no trips were affected by
-unmatched keys, and the mart reconciled to all 2,927,000 valid Silver trips and the existing location
-mart. It contains 260 rows, 14 columns, and one 18,362-byte Snappy Parquet part file at
-`data/gold/pickup_zone_performance/yellow/year=2024/month=01/`. Location ID 161 enriches to Manhattan,
-Midtown Center, Yellow Zone, with 141,742 trips. The first run took 16.37 seconds; a rerun safely
-replaced only January with the same results. Run enrichment with:
-
-```powershell
-docker compose run --rm pipeline python -m nyc_taxi_lakehouse.gold.geographic --taxi-type yellow --year 2024 --month 1
-```
-
-Phase 6 completed with 26 passing tests and Ruff.
-
-### Phase 7 — Multi-Month Incremental Processing & Backfill/Replay
-
-Phase 7 adds a local, stateful orchestrator for independent monthly periods. It coordinates the
-existing ingestion, Bronze, Silver, Gold, and geographic-enrichment jobs without becoming a data store.
-Period state and run history are written atomically under ignored `data/state/`, recording the requested
-period, mode, action, stage statuses, metrics, and completion status. A valid pre-existing January
-partition was adopted as `BOOTSTRAPPED`; February through June were processed normally.
-
-Run an incremental range with:
-
-```powershell
-docker compose run --rm pipeline python -m nyc_taxi_lakehouse.orchestration.pipeline --taxi-type yellow --start 2024-01 --end 2024-06 --mode incremental --from-stage ingestion
-```
-
-The January–June validation processed 20,332,093 Bronze rows into 20,015,099 valid Silver rows and
-316,994 quarantined rows. Every month reconciled `Bronze = valid Silver + quarantine`; daily and
-pickup-zone Gold trip counts also reconciled to valid Silver, with 100% Taxi Zone matches. An identical
-incremental rerun completed in 4.719 seconds with all six periods skipped and no monthly Spark stages
-or taxi-file downloads.
-
-Replay is explicit and dependency-aware. For example, this reprocesses March from Silver while first
-validating, but not rewriting, Raw and Bronze:
-
-```powershell
-docker compose run --rm pipeline python -m nyc_taxi_lakehouse.orchestration.pipeline --taxi-type yellow --start 2024-03 --end 2024-03 --mode replay --from-stage silver
-```
-
-The controlled March replay retained byte-identical Raw and Bronze files, then regenerated Silver,
-all four Gold marts, and geographic enrichment. It finished in 177.51 seconds with 3,523,905 valid
-rows, 58,723 quarantined rows, and a 100% geographic match rate. The external execution tool returned
-partial output during the original February processing while the Docker container continued; the
-pipeline itself subsequently completed successfully.
-
-### Phase 8 — Schema Evolution & Data Contracts
-
-The version-controlled Yellow Taxi v1 contract describes the 19 source columns observed in Raw
-Parquet. `required` means a column must exist; `nullable` describes whether its source schema permits
-null values. All 19 observed fields are physically nullable, including fields required to exist.
-PyArrow reads only Parquet metadata for inspection, so schema checks do not scan trip rows.
-
-The validator compares added, removed, type-changed, and nullability-changed fields against the
-committed contract. It hashes a canonical logical schema with SHA-256; physical column order, period,
-file path, and validation time do not affect the fingerprint. Compatibility uses `COMPATIBLE`,
-`WARNING`, and `BREAKING`, with `BREAKING` taking precedence when several changes occur. A compatible
-new nullable field can proceed; a missing required field or changed required type blocks Bronze and
-downstream processing. Synthetic tests cover these cases, both nullability directions, field order,
-and simultaneous changes.
-
-The orchestrator validates Raw before any Bronze rebuild, including ingestion replays and backfills.
-Downstream-only replays skip this source check. Historical Phase 7 success states remain readable and
-continue to skip completed periods. Each validation writes an atomic, Git-ignored audit report under
-`data/state/schema/yellow/<year>/<month>/`. The committed contract remains the expected schema; reports
-record observations and never update the contract. Run a metadata-only audit with:
-
-```powershell
-docker compose run --rm pipeline python -m nyc_taxi_lakehouse.schema.validator --taxi-type yellow --start 2024-01 --end 2024-06
-```
-
-The real January–June 2024 files each had 19 fields and the same logical fingerprint,
-`bb50ef4789e8c8308c722cc37849a2b7a0d7e46869a01909b69db4c7e3714ff7`. All six were exact
-matches, `COMPATIBLE`, and `PASS`; no real schema evolution was observed. Final metadata checks took
-0.032761–0.045336 seconds per period. Airflow has not been implemented.
-
-```mermaid
-flowchart TB
-    RAW["Incoming Raw Parquet"] --> INSPECT["Metadata-only Schema Inspection"]
-    CONTRACT["Versioned Data Contract<br/>Yellow Taxi v1"] --> COMPARE["Schema Comparison"]
-    INSPECT --> COMPARE
-    COMPARE --> MATCH["Exact Match"] --> PASS["PASS"] --> BRONZE["Continue to Bronze"]
-    COMPARE --> CHANGE["Schema Change"]
-    CHANGE --> ADDED["Added Column"] --> CLASSIFY["Compatibility Classification"]
-    CHANGE --> REMOVED["Removed Column"] --> CLASSIFY
-    CHANGE --> TYPE["Type Change"] --> CLASSIFY
-    CHANGE --> NULLABILITY["Nullability Change"] --> CLASSIFY
-    CLASSIFY --> SAFE["Compatible / Warning"] --> BRONZE
-    CLASSIFY --> BREAKING["Breaking"] --> BLOCK["Block Downstream Processing"]
-```
-
-### Phase 9 — MinIO + Apache Iceberg Lakehouse Storage
-
-Phase 9 adds local S3-compatible object storage and transactional Iceberg tables without removing the
-existing filesystem pipeline. Existing commands still write local Parquet by default. An explicit
-`--storage-backend iceberg` on the multi-month orchestrator publishes each completed local Bronze,
-Silver/quarantine, Gold, and geographic stage to Iceberg after the Phase 8 Raw schema gate. Historical
-January–June outputs were migrated directly from their validated Parquet partitions, without rerunning
-business transformations. The migration command checks the schema contract before any Bronze commit.
-
-```mermaid
-flowchart TB
-    TLC["Official NYC TLC"] --> RAW["Raw Parquet"] --> GATE["Phase 8 schema gate"]
-    GATE --> SPARK["Existing PySpark transformations"]
-    SPARK --> LOCAL["Local Bronze, Silver / Quarantine,<br/>and Gold Parquet"]
-    LOCAL --> PUB["Monthly Iceberg publication<br/>or historical migration"]
-    PUB --> TABLES["Apache Iceberg tables<br/>snapshots + period replacement"]
-    CATALOG["Local SQLite JDBC catalog<br/>table pointers"] -. manages .-> TABLES
-    TABLES --> MINIO["MinIO object storage<br/>metadata + data files"]
-```
-
-MinIO provides object storage, while Iceberg supplies table metadata, snapshots, and period-scoped
-atomic table commits. Spark 3.5.3 uses the Iceberg Spark 3.5 / Scala 2.12 runtime `1.10.1`; its
-bundled Hadoop 3.3.4 uses matching `hadoop-aws` and AWS SDK bundle `1.12.262` for S3A. Iceberg's
-Hadoop catalog requires atomic filesystem rename, which an S3 object store does not provide, so this
-local single-writer setup uses an embedded SQLite JDBC catalog at the Git-ignored
-`data/state/iceberg_catalog.db`. The Iceberg warehouse is
-`s3a://nyc-taxi-lakehouse/warehouse` in MinIO. MinIO credentials come from environment files;
-`.env.example` contains clearly marked local-development values, and `.env` remains ignored. The API
-and console are bound to localhost ports 9000 and 9001. This is a local demonstration, not a
-production-ready multi-writer catalog or a managed-cloud deployment.
-
-Tables live in the `lakehouse.nyc_taxi` namespace. Bronze, valid Silver, quarantine, and all five
-Gold marts use Iceberg identity partitions on `_source_taxi_type`, `_source_year`, and `_source_month`.
-This aligns with source-period backfills and exact monthly overwrite filters without partitioning by
-trip timestamps or creating tiny daily partitions. Each table is committed separately: a failed
-multi-table run is visible as a failed stage and can be retried, but it is **not** one cross-table
-transaction. Existing source/business schemas and five Bronze lineage columns are preserved;
-aggregates retain their period-level lineage. The Taxi Zone CSV remains the small authoritative
-reference input for the existing broadcast enrichment.
-
-| Iceberg table in `lakehouse.nyc_taxi` | Jan–Jun rows | Active data files |
-| --- | ---: | ---: |
-| `bronze_trips` | 20,332,093 | 6 |
-| `silver_trips` | 20,015,099 | 6 |
-| `quarantine_trips` | 316,994 | 6 |
-| `gold_daily_trip_metrics` | 207 | 6 |
-| `gold_hourly_demand` | 4,408 | 6 |
-| `gold_pickup_location_performance` | 1,550 | 6 |
-| `gold_payment_type_summary` | 31 | 6 |
-| `gold_pickup_zone_performance` | 1,550 | 6 |
-
-Every month reconciled: Bronze = valid Silver + quarantine; each Gold mart's summed trip count equals
-valid Silver; migrated Gold rows matched their local Parquet counterparts in both directions. January
-Bronze was loaded twice: 2,964,624 rows before and after, with a new Iceberg snapshot rather than
-duplicate records. A separate real MinIO integration test replaced one synthetic month while keeping
-another month intact and queried the earlier snapshot. All six migrated pickup-zone months retained
-100% non-null zone matches. MinIO inspection found Iceberg metadata JSON and Parquet data objects.
-The Phase 8 baseline of 52 tests grew to 61 passing tests, including Docker-based MinIO/Iceberg
-write/read, replay, time travel, and breaking-contract checks; Ruff passed.
-
-From the repository root, after copying `.env.example` to `.env`, use these commands. Historical
-migration requires the earlier local Parquet outputs; a fresh clone must run the existing ingestion
-and filesystem pipeline first.
-
-```powershell
 docker compose build pipeline
+docker compose run --rm --no-deps pipeline python --version
+docker compose run --rm --no-deps pipeline pytest -p no:cacheprovider -m "not docker and not heavy" -q
+docker compose run --rm --no-deps pipeline ruff check src tests airflow scripts
+```
+
+This validates installed dependencies and runs synthetic/local-data tests without MinIO, PostgreSQL, Airflow state, Superset state, or historical TLC files. It is a **quick code/environment check**, not a claim that the six-month data pipeline ran on a fresh clone.
+
+### One real source month — downloads and transforms millions of trips
+
+From that same repository root, the following **non-quick** path fetches official January 2024 data and the small Taxi Zone lookup, then runs Raw → schema gate → Bronze → Silver/quarantine → all five Gold marts on the local filesystem. It needs network access and disk space; rerunning incrementally skips a complete period.
+
+```powershell
+docker compose run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.orchestration.pipeline --taxi-type yellow --start 2024-01 --end 2024-01 --mode incremental --storage-backend filesystem
+```
+
+For the optional lakehouse/serving/dashboard path **after Gold exists**, start local services and publish the same month. This path uses local development credentials and does not deploy to a cloud account:
+
+```powershell
 docker compose up -d minio minio-init
-docker compose run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.storage.smoke
-docker compose run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.storage.migrate --start 2024-01 --end 2024-06
-docker compose run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.storage.inspect --dataset bronze --year 2024 --month 1
-docker compose run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.orchestration.pipeline --taxi-type yellow --start 2024-01 --end 2024-01 --mode incremental --storage-backend iceberg
-docker compose run --rm --no-deps -e RUN_ICEBERG_INTEGRATION=1 pipeline pytest
-```
-
-The bucket initializer and monthly migration are idempotent. The Iceberg-mode incremental command
-adopted the already migrated January period, then a second run skipped it without a download or
-transformation. The pinned community MinIO image is for loopback-only local development; review its
-archived upstream and security status before considering any non-local use.
-
-### Phase 10 — Airflow Production Orchestration
-
-Airflow 2.10.5 adds a local operational control plane for the existing processors. Its Python 3.11
-image includes the same Spark 3.5.3, Java 17, and Iceberg dependencies as the pipeline image.
-`LocalExecutor` uses a dedicated PostgreSQL 16 metadata database; this is separate from the local
-SQLite JDBC Iceberg catalog and MinIO's object storage. The scheduler and webserver run as a non-root
-user, with logs and PostgreSQL data in Docker volumes. The idempotent initializer migrates the metadata
-database, creates a development-only admin account, and makes an existing root-owned Phase 9 catalog
-file writable by Airflow before dropping privileges. The existing Phase 7 CLI/orchestrator remains
-available; Airflow does not use its period SUCCESS files to skip tasks or copy processing logic into
-the DAG.
-
-```mermaid
-flowchart TB
-    RUN["Monthly interval / deliberate manual run"] --> DAG["Airflow control plane"]
-    DAG --> ING["Ingest Raw"] --> GATE["Validate schema"] --> BR["Bronze"]
-    BR --> SI["Silver + quarantine"] --> GO["Gold marts"] --> GEO["Geographic enrichment"]
-    GEO --> PUB["Publish Iceberg if selected"] --> REC["Reconcile period"]
-    GATE -.->|Breaking| STOP["Failed run; downstream blocked"]
-    PUB -.->|Iceberg mode| STORE["Existing Iceberg tables / MinIO"]
-```
-
-The single `nyc_taxi_monthly_lakehouse` DAG runs on `@monthly` in UTC. Its interval **start** selects
-the source month: the February 2024 interval processes `2024-02`. A manual run can explicitly set
-`period` in its run configuration for replay. The DAG starts at 2024-01-01 but is created paused, with
-`catchup=False` and one active run at a time: starting Docker does not launch January–June or any
-other historical backlog. An operator may deliberately trigger one period or request a bounded
-backfill. The TLC publication lag is not inferred away: unpausing the current schedule before its
-source file exists can produce an ingestion failure, so operators should check source availability.
-
-The eight task IDs, in order, are `ingest_raw`, `validate_schema`, `bronze`, `silver`, `gold`,
-`geographic`, `publish_iceberg`, and `validate_reconciliation`. The DAG only defines dependency,
-parameters, retry policy, and logging; adapters in `src/nyc_taxi_lakehouse/orchestration/airflow_stages.py`
-call the existing processors. Ingestion gets two retries for transient network failures; the
-deterministic `BREAKING` schema gate gets none; later transform/storage tasks get one. `COMPATIBLE`
-continues, and `WARNING` continues with a warning log. A breaking contract fails `validate_schema`
-and leaves Bronze and all downstream tasks blocked. Filesystem mode skips optional publication using
-Airflow skip semantics while reconciliation still runs. Iceberg mode calls the existing publisher for
-all eight period-scoped tables; a retry replaces that month rather than appending duplicates. Each
-table commit is atomic, but the eight publications are not one cross-table transaction.
-
-Final reconciliation checks Bronze = valid Silver + quarantine, verifies all five Gold trip-count
-sums against valid Silver, and—when selected—checks the published Iceberg period. The geographic task
-returns matched/unmatched location counts and match percentage. XCom contains only small JSON-safe
-period, compatibility, count, and snapshot metadata; DataFrames and Parquet content stay in storage.
-
-After copying `.env.example` to the ignored `.env`, use the following from the repository root.
-Airflow's web UI is bound to [localhost:8080](http://localhost:8080). Filesystem-only use does not
-require MinIO; start `minio` and `minio-init` for Iceberg mode. The example credentials are strictly
-for local development.
-
-```powershell
-docker compose --profile airflow build pipeline airflow-init
-docker compose --profile airflow up -d airflow-postgres airflow-scheduler airflow-webserver
-docker compose --profile airflow ps
-docker compose --profile airflow run --rm --no-deps --user airflow airflow-init airflow dags list
-docker compose --profile airflow run --rm --no-deps --user airflow airflow-init airflow dags list-runs -d nyc_taxi_monthly_lakehouse
-docker compose up -d minio minio-init
-docker compose --profile airflow run --rm --no-deps --user airflow airflow-init airflow dags backfill nyc_taxi_monthly_lakehouse --start-date 2024-03-01 --end-date 2024-03-01 --dry-run
-docker compose --profile airflow stop airflow-scheduler airflow-webserver airflow-postgres
-```
-
-For a deliberate March replay, set `period` to `2024-03` and choose `taxi_type=yellow` and
-`storage_backend=filesystem` or `iceberg` in a manual DAG run; unpause the DAG only when ready for
-the scheduler to execute it. This reprocesses only the addressed month but executes all DAG stages.
-The Airflow 2.10.5 CLI accepts the following manual trigger (syntax verified with its CLI help; this
-real data-changing replay was **not** executed during Phase 10):
-
-```powershell
-$runConfig = '{"period":"2024-03","taxi_type":"yellow","storage_backend":"filesystem"}'
-docker compose --profile airflow run --rm --no-deps --user airflow airflow-init airflow dags unpause nyc_taxi_monthly_lakehouse
-docker compose --profile airflow run --rm --no-deps --user airflow airflow-init airflow dags trigger nyc_taxi_monthly_lakehouse --exec-date 2024-03-01 --conf $runConfig
-```
-
-Unpausing also enables the latest scheduled interval, so review source availability and pause the
-DAG again after the controlled replay if ongoing scheduling is not desired.
-The existing Phase 7 CLI remains the narrower option for a Silver-onward replay. A bounded Airflow
-backfill can use the same `backfill` command without `--dry-run` **only after** reviewing the source
-scope and expected overwrites. We validated March's dry-run, not a real historical Airflow backfill.
-
-Operational evidence: PostgreSQL, MinIO, scheduler, and webserver health checks passed; Airflow
-reported zero DAG import errors and listed the DAG as paused. Safe `dag.test()` runs with isolated
-stage stubs recorded task-level success, optional-publication skip, and a failed schema gate with
-Bronze `upstream_failed`. The final Docker suite passed **76 tests in 100.06 seconds**, including
-the Phase 9 MinIO/Iceberg integration tests; Ruff passed. An existing January Iceberg Bronze table
-remained readable after the Compose changes (20,332,093 total rows; 2,964,624 for January). No
-January–June business transformations were rerun merely to demonstrate Airflow.
-
-### Phase 11 — Analytics Serving Layer & Mobility Dashboard
-
-The serving layer publishes the existing **validated Gold Parquet**, not Raw, Bronze, Silver, or
-quarantine, into a separate PostgreSQL analytics database. This source choice keeps publication
-independent of optional Iceberg mode: the same compact Gold outputs can be served when the DAG runs
-with filesystem storage. Iceberg/MinIO remains the lakehouse storage path, not a PostgreSQL
-replacement. Superset queries PostgreSQL only. No historical upstream partitions were rebuilt for
-this phase.
-
-```mermaid
-flowchart LR
-    GOLD["Validated Gold marts"] --> ICEBERG["Iceberg tables"] --> MINIO["MinIO"]
-    GOLD --> PUBLISH["Transactional serving publisher"] --> POSTGRES[("PostgreSQL analytics")]
-    POSTGRES --> SUPERSET["Apache Superset"] --> BI["Mobility dashboard"]
-    AIRFLOW["Airflow control plane"] -.-> PUBLISH
-```
-
-One PostgreSQL 16.15 server hosts **three separate databases and owner roles**:
-`airflow_metadata`/`airflow_dev`, `nyc_taxi_analytics`/`analytics_dev`, and
-`superset_metadata`/`superset_dev`. The five serving tables live in the `analytics` schema:
-`daily_trip_metrics` (source period + pickup date), `hourly_demand` (period + date + hour),
-`pickup_location_performance` (period + location ID), `payment_type_summary` (period + payment type),
-and `pickup_zone_performance` (period + location ID with official zone attributes). Each keeps the
-Gold metrics and `_source_taxi_type`, `_source_year`, `_source_month`, `_gold_processed_at`; publication
-adds `_serving_published_at`. A primary key covers taxi type, source year/month, and each mart's grain.
-Date, date/hour, location, payment, and borough/zone indexes support the expected dashboard queries.
-The source period remains part of daily/hourly keys because a monthly source file can contain pickup
-dates outside its nominal month.
-
-The publisher reads compact Gold rows with PyArrow, then replaces **all five tables for one source
-month in one PostgreSQL transaction**. It deletes only that taxi type/year/month, inserts, compares
-every business value against Gold (floating values with tolerance, exact decimal money), reconciles
-trip counts and total amounts across marts, and commits. Any failed insert or reconciliation rolls
-the five-table period back. Other months are untouched. An isolated real-PostgreSQL test proved
-idempotent republishing, unrelated-February preservation, and rollback after an intentional duplicate
-key error. Runtime credentials come from the ignored `.env`; `.env.example` contains local-only
-development placeholders. No serving datasets or PostgreSQL volumes are committed.
-
-January was published and rerun first. January's five mart trip totals remained **2,927,000**.
-The January–June backfill then reconciled **20,015,099** valid Silver trips against each of the five
-Gold and PostgreSQL mart trip totals. Serving table row counts were 207 daily, 4,408 hourly, 1,550
-pickup-location, 31 payment-type, and 1,550 pickup-zone rows. Every published Gold business value
-matched its serving copy. Individual month publications took 0.69–1.12 seconds in this local run;
-these are observations, not a benchmark against Iceberg. Example read-only SQL is in
-`sql/serving_examples.sql`.
-
-Airflow now has a ninth task, `publish_serving`, between optional `publish_iceberg` and final
-`validate_reconciliation`. It runs after a skipped Iceberg task in filesystem mode, has one retry,
-and returns only table row counts and trip count through XCom. A serving failure marks that task and
-downstream validation failed; successful Gold/Iceberg tasks retain their states. The final task also
-checks the serving period against Gold and valid Silver. The breaking-schema gate still blocks all
-downstream work.
-
-Apache Superset **6.0.0** (its pinned image runs Python 3.10.19) uses a dedicated metadata database;
-the small derived image adds the PostgreSQL `psycopg2-binary` driver missing from the base runtime.
-The one `NYC Urban Mobility Overview` dashboard is reproducibly created/updated by
-`scripts/bootstrap_dashboard.py` through Superset's REST API, not direct metadata-table edits. It
-contains total trips, TLC total amount, trip-count-weighted average distance/duration, daily trips,
-daily total amount, hourly pickup demand, pickup trips by borough, top pickup zones, and payment-type
-trips. Source-month filtering applies across the marts; pickup-borough filtering is scoped to
-geographic charts. TLC `total_amount` is a trip-charge/revenue-like measure, not company accounting
-revenue. The saved dashboard has five datasets and ten charts; a forced Superset chart-data API smoke
-test executed all ten against PostgreSQL (daily charts returned 188 date groups, hourly demand 24
-hour groups). Arbitrary date-range filtering across non-date-grained marts is not included.
-
-From the repository root, after copying `.env.example` to the ignored `.env` and starting Docker
-Desktop, use these Phase 11 commands. The pinned Superset UI is bound to
-[localhost:8088](http://localhost:8088); example credentials are for local development only.
-
-```powershell
-docker compose --profile airflow --profile dashboard build pipeline airflow-init superset
+docker compose --profile airflow up -d airflow-postgres
 docker compose --profile airflow run --rm analytics-db-init
+docker compose run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.storage.migrate --start 2024-01 --end 2024-01
 docker compose --profile airflow run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.serving.publisher --taxi-type yellow --start 2024-01 --end 2024-01
-docker compose --profile airflow run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.serving.publisher --taxi-type yellow --start 2024-01 --end 2024-06
-docker compose --profile airflow run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.serving.reconciliation --start 2024-01 --end 2024-06
 docker compose --profile airflow --profile dashboard up -d superset
 docker compose --profile airflow --profile dashboard run --rm --no-deps pipeline python scripts/bootstrap_dashboard.py
 docker compose --profile airflow --profile dashboard run --rm --no-deps pipeline python -m scripts.smoke_dashboard
-docker compose --profile airflow --profile dashboard run --rm --no-deps --user airflow -e RUN_ICEBERG_INTEGRATION=1 -e RUN_SERVING_INTEGRATION=1 -e RUN_SUPERSET_INTEGRATION=1 airflow-init pytest -p no:cacheprovider -q
 ```
 
-The final Docker regression passed **89 tests in 88.94 seconds**, including existing MinIO/Iceberg
-and Airflow tests plus isolated PostgreSQL and real Superset API tests. Ruff passed across
-`src tests airflow scripts`; Compose, shell syntax, and DAG import checks passed. The local setup is
-not production hardened: example passwords must be changed beyond localhost, Superset currently uses
-in-memory rate limiting and lacks a Content Security Policy, and the dashboard API smoke proves
-data execution and saved layout but is not a browser visual-regression test.
+Airflow's UI is at [localhost:8080](http://localhost:8080) **after** starting `airflow-scheduler` and `airflow-webserver` with the `airflow` Compose profile; the DAG is paused at creation. Superset's UI is at [localhost:8088](http://localhost:8088) after the dashboard commands. Consult [development history](docs/implementation-history.md#phase-10--airflow-control-plane) and [current status](PROJECT_STATUS.md) for bounded replay/backfill, full service tests, and operational caveats. Do not unpause Airflow until you intend to run a source period and have checked TLC publication availability.
 
-### Phase 12 — Pipeline Reliability, Failure Recovery & Advanced Testing
+## Project structure
 
-Phase 12 tests failure boundaries in the existing local architecture; it adds no new data platform.
-An isolated failure must stop dependent work, preserve the last valid publication, and allow a
-deliberate retry. Airflow remains the control plane, and a breaking data contract remains a
-non-retryable gate. Transient ingestion and service failures are retryable; neither is allowed to
-silently fall back to a different storage backend.
-
-```mermaid
-flowchart LR
-    RAW["Raw + schema gate"] --> MED["Bronze / Silver / Gold"]
-    MED -->|optional publication| ICE["Iceberg / MinIO"]
-    MED -->|Gold marts| PG["PostgreSQL serving"] --> BI["Superset"]
-    FAULT["Injected fault"] -.-> MED
-    FAULT -.-> ICE
-    FAULT -.-> PG
-    RAW --> CHECK["Period reconciliation"]
-    MED --> CHECK
-    ICE --> CHECK
-    PG --> CHECK
-    CHECK --> RETRY["Safe retry / replay"]
+```text
+src/nyc_taxi_lakehouse/   Ingestion, Bronze/Silver/Gold, schema, orchestration, storage, serving
+airflow/dags/              Monthly Airflow control-plane DAG
+configs/contracts/         Versioned source schema contract
+scripts/                   Initialization, dashboard, benchmark, validation utilities
+sql/                       Read-only serving query examples
+tests/unit/                Deterministic unit and contract tests
+tests/integration/         Spark, service and failure-recovery tests
+.github/workflows/         Four-job CI workflow
+data/                      Ignored runtime layers and state; only .gitkeep files tracked
+docs/                      Technical development history
 ```
 
-The test matrix covers a transient and a permanent mocked download failure; removed, retyped,
-nullability-breaking, reordered, and newly nullable schema fields; malformed contracts; and
-injected Bronze, Silver, Gold, and geographic stage faults. Schema severity is order-independent:
-`BREAKING` is never downgraded by a later warning. Failed processors retain the prior local
-partition and clean temporary output; isolated stage-state tests confirm dependent stages remain
-pending and a narrow replay succeeds. Existing Phase 7 state without newer stage keys still loads.
+## Development history
 
-| Injected boundary | Failure/blocked work | Preserved state | Recovery evidence |
-| --- | --- | --- | --- |
-| Download or breaking contract | Ingestion/schema gate; later stages blocked | Earlier period files | Download retry; gate classification |
-| Bronze, Silver, Gold, geographic promotion | Addressed stage; later stages pending | Prior target partitions and unrelated marts | Narrow stage replay |
-| Unreachable MinIO or Iceberg pre-commit fault | Iceberg publication; serving/reconciliation blocked in DAG | Prior snapshot and unrelated month | Fresh-session retry, no duplicate rows |
-| PostgreSQL outage or third-mart insert fault | Serving publication; final reconciliation blocked | Five prior mart versions, upstream Gold/Iceberg | Atomic retry, idempotent republish |
-| Reconciliation corruption or malformed chart | Final validation or dashboard preflight | Published data/dashboard | Detection before false success/API writes |
+[Phase 1–14 implementation and validation details](docs/implementation-history.md) retain the technical trail without making it the first thing a reader must navigate. The engineering milestones were foundation, TLC ingestion, Bronze, Silver, Gold, Taxi Zone enrichment, incremental replay, schema contracts, MinIO/Iceberg, Airflow, PostgreSQL/Superset, failure recovery, CI, and measured performance work. `PROJECT_STATUS.md` records the latest checkpoint and granular evidence.
 
-An Iceberg test uses a unique namespace and catalog, not the January–June tables. An unreachable
-MinIO endpoint fails publication without filesystem fallback; the prior snapshot remains readable.
-Restoring the endpoint in a fresh Spark JVM permits a new snapshot and idempotent January overwrite
-while February stays unchanged. A separate pre-commit fault also leaves the prior snapshot intact.
-S3A filesystem caching is disabled for newly configured Spark sessions so an endpoint-specific
-session cannot silently reuse a previous S3A filesystem; recovery tests start fresh JVMs because
-Iceberg file-I/O instances can retain failed connection state inside a process.
+## Limitations and production mapping
 
-The PostgreSQL tests use an isolated analytics schema. An unavailable endpoint leaves Gold and
-the previously served period intact. A fault on the third mart insert rolls back all five mart
-replacements in one transaction; retry updates all five, a second retry remains idempotent, and an
-unrelated month remains unchanged. Airflow fixture runs assert real task states for failures at
-ingestion, schema validation, Silver, Iceberg publication, serving publication, and final
-reconciliation. The failed task is `FAILED`, downstream tasks are `UPSTREAM_FAILED`, and prior
-successful tasks remain successful. The production DAG still has nine tasks and zero import errors.
+This is a local single-machine demonstration, **not** a hardened or managed-cloud deployment. The SQLite Iceberg JDBC catalog is single-writer; Iceberg commits are per table, whereas PostgreSQL serving publication is transactional across five marts per period. The pinned community MinIO image and development credentials are for loopback-only use. Airflow's paused schedule must account for TLC release lag. Superset's local setup lacks production rate limiting/CSP; the zone chart has a row-limit warning and browser visual regression is manual. Full historical data and performance runs are excluded from CI, and the measured Gold improvement does not establish performance at larger scale.
 
-Final period reconciliation fails on Bronze ≠ valid Silver + quarantine, any Gold mart trip total
-≠ valid Silver, missing/mismatched Iceberg table counts, or serving trip totals ≠ valid Silver.
-The existing serving validator separately checks Gold-to-PostgreSQL business values. Read-only
-January–June checks passed across all six periods and five marts: 20,332,093 Bronze rows =
-20,015,099 valid Silver + 316,994 quarantine rows; each Gold and serving mart represents
-20,015,099 valid trips. The Iceberg Bronze table remains readable at 20,332,093 rows, including
-2,964,624 January rows. Before/after file count, byte count, and path/size/mtime fingerprints
-matched for historical Raw, Bronze, Silver, quarantine, and Gold directories.
-
-Dashboard preflight rejects unsupported visualization types (including obsolete `dist_bar`),
-duplicate/missing chart definitions, and bar charts without a category axis before API writes.
-Tests verify five serving datasets, ten uniquely named charts, layout references, and the current
-source-month and geographic-filter scope. Two REST bootstraps reused dashboard ID 1 without
-duplicates; all ten chart-data queries passed. A signed-in local Chrome session displayed all ten
-rendered charts. “Top Pickup Zones” renders but shows Superset's row-limit warning; the dashboard
-still has no arbitrary cross-mart date-range filter.
-
-Run the focused and full regression from the repository root after starting the local services:
-
-```powershell
-docker compose --profile airflow --profile dashboard run --rm --no-deps --user airflow -e RUN_SERVING_INTEGRATION=1 airflow-init pytest -p no:cacheprovider -q tests/unit/test_nyc_taxi_ingestion.py tests/unit/test_schema_validator.py tests/unit/test_reliability_reconciliation.py tests/unit/test_dashboard_definition.py tests/integration/test_orchestration_pipeline.py tests/integration/test_airflow_dag.py tests/integration/test_serving_postgres.py
-docker compose --profile airflow --profile dashboard run --rm --no-deps --user airflow -e RUN_ICEBERG_INTEGRATION=1 -e RUN_SERVING_INTEGRATION=1 -e RUN_SUPERSET_INTEGRATION=1 airflow-init pytest -p no:cacheprovider -q
-docker compose --profile airflow --profile dashboard run --rm --no-deps pipeline ruff check src tests airflow scripts
-docker compose --profile airflow --profile dashboard config --quiet
-```
-
-The focused run passed 75 tests; the final full Docker run passed 130 tests in 383.84 seconds, including
-the original Phase 1–11 coverage. Failure injection uses temporary directories, a dedicated
-Iceberg namespace, an isolated PostgreSQL schema, and Airflow stubs. No historical business
-partition was reprocessed to obtain this evidence.
-
-### Phase 13 — CI/CD Quality Gates & Automated Validation
-
-Phase 13 adds **continuous integration**, not production deployment. The `CI` workflow in
-`.github/workflows/ci.yml` runs on pull requests and pushes to `main`. It uses read-only repository
-permissions and cancels superseded runs for the same branch or PR. The four jobs form a practical
-validation ladder:
-
-```mermaid
-flowchart TB
-    CODE["Push to main / Pull request"] --> QUALITY["Quality<br/>Ruff, YAML, shell, Compose, Git hygiene"]
-    CODE --> FAST["Fast Tests<br/>Unit, schema contract, dashboard definitions"]
-    QUALITY --> BUILD["Docker Build<br/>Pipeline image only"]
-    QUALITY --> INTEGRATION["Integration Tests<br/>MinIO, Iceberg, PostgreSQL, Airflow DAG"]
-    FAST --> INTEGRATION
-    QUALITY --> RESULT["CI status"]
-    FAST --> RESULT
-    BUILD --> RESULT
-    INTEGRATION --> RESULT
-```
-
-The Quality job checks Ruff, parses workflow YAML, validates shell syntax and Compose configuration,
-checks tracked-file hygiene, and runs `git diff --check` against the PR base or preceding main
-commit. Fast Tests use Python 3.11 and Java 17 with dependency-keyed pip caching; they run the
-service-independent tests, including schema-contract behavior and the Superset chart-definition
-preflight that rejects obsolete `dist_bar` in favor of `echarts_timeseries_bar`. Integration Tests
-build the existing pipeline/Airflow images, start only MinIO and PostgreSQL, wait for health, then
-run the selected service tests. These cover the real Airflow DAG and task states, Iceberg/MinIO
-publication and recovery, PostgreSQL period replacement and five-mart rollback. Docker Build proves
-the pipeline image builds but publishes nothing.
-
-The registered pytest markers are `integration` (cross-component), `docker` (real services), and
-`heavy` (expensive, deliberately outside normal PR CI). The selected tiers are 122 fast tests,
-19 service tests, and two heavy tests. The heavy tests and the complete suite remain a local/manual
-regression gate, not a claimed GitHub PR check. No CI job downloads historical NYC Taxi files,
-calls the live TLC endpoint, starts Superset, or renders a browser dashboard. The workflow creates
-an ignored, ephemeral `.env` from `.env.example` with CI-only generated service passwords; it
-never reads a developer's `.env`. No datasets, databases, secrets, or images are uploaded. On
-integration failure, the job prints bounded service status/log diagnostics.
-
-To reproduce the principal checks from the repository root with Docker Desktop running and a
-local `.env` created from `.env.example` (the hygiene script also needs host Python and Git;
-GitHub CI provides both automatically):
-
-```powershell
-docker compose --profile airflow --profile dashboard run --rm --no-deps pipeline ruff check src tests airflow scripts
-docker compose --profile airflow --profile dashboard config --quiet
-python scripts/check_repository_hygiene.py
-docker compose --profile airflow run --rm --no-deps pipeline pytest -p no:cacheprovider -m "not docker and not heavy" -q
-docker compose --profile airflow run --rm --no-deps --user airflow -e RUN_ICEBERG_INTEGRATION=1 -e RUN_SERVING_INTEGRATION=1 airflow-init pytest -p no:cacheprovider -m "docker and not heavy" -q
-```
-
-The hosted [Phase 13 CI run](https://github.com/harshitha-108/nyc-taxi-lakehouse/actions/runs/35866909898)
-passed all four jobs on a fresh GitHub runner. Suitable future branch-protection checks are the
-actual job names: `Quality`, `Fast Tests`, `Integration Tests`, and `Docker Build`; branch
-protection has **not** been enabled here. The complete local Docker regression, including both
-heavy tests, passed 143 tests in 408.44 seconds; this is a separate local validation, not a PR job.
-
-### Phase 14 — Performance Engineering, Query Optimization & Benchmarking
-
-Phase 14 measured the existing local lakehouse before changing one production behavior: Gold no
-longer persists the entire valid Silver DataFrame. The five-mart architecture, Iceberg layout,
-PostgreSQL indexes, business rules, and historical January–June partitions remain unchanged.
-
-```mermaid
-flowchart LR
-    B["Measure baseline"] --> P["Inspect plans and data layout"]
-    P --> C["Change one behavior"]
-    C --> M["Measure again"]
-    M --> V["Verify values and recovery"]
-    V --> D{"Adopt?"}
-    D -->|Useful and safe| A["Adopt"]
-    D -->|Otherwise| R["Reject / retain current design"]
-```
-
-Benchmarks used the real Yellow Taxi January 2024 data in the existing local Docker environment
-(Python 3.11.16, Java 17, PySpark 3.5.3, Iceberg 1.10.1, PostgreSQL 16.15; Spark AQE enabled,
-four shuffle partitions, `local[*]`). Each paired experiment warmed both variants once, then
-alternated three measured runs in A/B, B/A, A/B order. The production-code Gold check used one
-untimed warm-up and three measured runs. Timings are wall-clock observations with warm/mixed JVM
-and filesystem caches, not controlled cold-start measurements or universal speedup estimates.
-Generated benchmark data and JSON results live under ignored `data/state/benchmarks/`.
-
-| Experiment | Baseline median | Candidate median | Decision |
-| --- | ---: | ---: | --- |
-| Full January Gold: persist Silver input → production no-persist | 59.916 s | 36.362 s | **ADOPTED** after value, downstream, and recovery checks |
-| January daily aggregate: shuffle partitions 4 → 2 | 1.444 s | 1.417 s | **REJECTED**: difference too small/noisy |
-| January daily aggregate: shuffle partitions 4 → 8 | 1.346 s | 1.356 s | **REJECTED**: no improvement |
-| January Silver Parquet write/read: `coalesce(1)` → `repartition(2)` | 27.119 s | 29.861 s | **REJECTED**: slower; two files were larger |
-| January Iceberg filter versus all-month scan | Different data scopes | 6 → 1 planned scan tasks | **NO CHANGE NEEDED**: period pruning already visible; no timing speedup claim |
-| 1,550-row PostgreSQL zone mart: candidate borough/trip index | 0.476 ms | 0.108 ms | **REJECTED**: only 0.368 ms absolute gain for another index |
-| Geographic Taxi Zone join | Existing broadcast join | No candidate change | **NO CHANGE NEEDED** |
-
-The Gold baseline's three persisted runs were 62.472, 59.916, and 58.972 seconds. The initial
-paired no-persist experiment had a 38.664-second median; the **modified production code** then
-ran in 37.296, 36.362, and 33.899 seconds (median 36.362; min 33.899; max 37.296). Comparing
-the persisted baseline with the final production median gives an observed **39.31% lower median**
-for this January workload and local environment. They were separate, similarly warmed Docker
-sessions, so this is directional evidence, not a statistical or cold-cache guarantee. Persistence
-was counterproductive for this workload; Spark caching is not generally slower. The optimized
-plans no longer show `InMemoryTableScan`, while `HashAggregate`, `Exchange` shuffles, and AQE
-remain. Parquet `ReadSchema` shows column pruning; the full-month Gold aggregates have no
-predicate to push down. Iceberg `BatchScan` filters reduced planned scan tasks from six to one
-for January. The Taxi Zone path uses `BroadcastHashJoin` with the small lookup on the build side.
-
-All four optimized Gold marts retained exact business-row digests, representing 2,927,000 valid
-January trips and 80,342,626.37 in TLC `total_amount`. The enriched geographic mart's business
-digest matched the existing output, with 100% reference-key matching. All five compact marts
-published and replayed in an isolated Iceberg catalog/namespace and a temporary PostgreSQL schema;
-each represented 2,927,000 trips. Focused failure/replay coverage passed 47 tests in 1,284.76
-seconds, and the complete local Docker suite passed **155 tests in 345.41 seconds** (versus 143
-before Phase 14); its post-documentation rerun passed 155 tests in 395.66 seconds. Read-only
-January–June reconciliation confirmed 20,332,093 Bronze rows =
-20,015,099 valid Silver + 316,994 quarantine; every local Gold, Iceberg, and PostgreSQL mart
-represented its corresponding valid Silver count. Historical Raw, Bronze, Silver, quarantine,
-and Gold path/size/mtime fingerprints remained unchanged. The [implementation CI run](https://github.com/harshitha-108/nyc-taxi-lakehouse/actions/runs/35905605539)
-passed Quality, Fast Tests, Docker Build, and Integration Tests on fresh hosted runners.
-
-To reproduce selected manual checks from the repository root, first start the documented local
-MinIO/PostgreSQL services and ensure January–June historical data exists. These commands write
-only ignored, isolated benchmark outputs; the history validator reads business data without
-rewriting it. Full-data benchmarks are intentionally excluded from GitHub CI.
-
-```powershell
-docker compose --profile airflow run --rm --no-deps pipeline python scripts/benchmark_phase14.py plans
-docker compose --profile airflow run --rm --no-deps pipeline python scripts/benchmark_phase14.py production_gold
-docker compose --profile airflow run --rm --no-deps pipeline python scripts/validate_phase14_downstream.py
-docker compose --profile airflow run --rm --no-deps pipeline python scripts/validate_phase14_history.py
-```
-
-The Silver repartition candidate produced two files totaling 81.78 MB versus one 65.40 MB file,
-without an established read benefit. The PostgreSQL candidate changed `Limit → Sort → Seq Scan`
-to `Limit → Index Scan`, but the 0.368 ms absolute gain on a small mart did not justify index
-maintenance. No shuffle, layout, geographic join, Iceberg, or PostgreSQL index change was kept.
-Historical stage durations are operational context, not a controlled before/after comparison:
-June ingestion 4.187 s, Bronze 24.178 s, Silver 81.457 s, Gold 58.575 s, and geographic
-enrichment 4.502 s. Local single-machine timings and compact serving marts do not establish
-performance at billion-row scale.
-
-## Production mapping (reference only)
-
-| Local component | Typical managed equivalent |
-| --- | --- |
-| MinIO (planned) | Amazon S3 / Azure Data Lake Storage |
-| Local Spark | Amazon EMR / Databricks / Azure Synapse |
-| Apache Airflow (planned) | MWAA / Cloud Composer / managed Airflow |
-| Local analytics database (planned) | A cloud warehouse or managed PostgreSQL |
+If deployed elsewhere, MinIO could map to S3/ADLS, local Spark to managed Spark, local Airflow to managed Airflow, and local PostgreSQL/Superset to appropriate managed serving/BI services. Those are **reference mappings**, not services used by this repository. Kafka, CDC, and dbt are not implemented.
