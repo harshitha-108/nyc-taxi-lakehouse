@@ -6,6 +6,8 @@ import pytest
 from scripts.bootstrap_dashboard import SupersetClient
 from scripts.smoke_dashboard import smoke
 
+pytestmark = [pytest.mark.integration, pytest.mark.docker, pytest.mark.heavy]
+
 
 @pytest.mark.skipif(os.environ.get("RUN_SUPERSET_INTEGRATION") != "1",
                     reason="Set RUN_SUPERSET_INTEGRATION=1 with Superset running.")

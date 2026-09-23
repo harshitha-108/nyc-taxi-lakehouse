@@ -21,10 +21,14 @@ from nyc_taxi_lakehouse.serving.config import ServingConfig
 from nyc_taxi_lakehouse.serving.database import MARTS, Mart
 from nyc_taxi_lakehouse.serving.publisher import gold_path, publish_period
 
-pytestmark = pytest.mark.skipif(
-    os.environ.get("RUN_SERVING_INTEGRATION") != "1",
-    reason="Set RUN_SERVING_INTEGRATION=1 with the local analytics database running.",
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.docker,
+    pytest.mark.skipif(
+        os.environ.get("RUN_SERVING_INTEGRATION") != "1",
+        reason="Set RUN_SERVING_INTEGRATION=1 with the local analytics database running.",
+    ),
+]
 
 
 @pytest.fixture()

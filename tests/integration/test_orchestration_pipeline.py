@@ -14,6 +14,8 @@ from nyc_taxi_lakehouse.orchestration.pipeline import PipelineError, PipelinePat
 from nyc_taxi_lakehouse.orchestration.state import PeriodState, ProcessingPeriod, StateStore
 from nyc_taxi_lakehouse.schema.validator import Contract, Field, validate_and_report
 
+pytestmark = pytest.mark.integration
+
 
 @dataclass
 class StageResult:

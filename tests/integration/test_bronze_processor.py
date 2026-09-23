@@ -21,6 +21,8 @@ from nyc_taxi_lakehouse.bronze.processor import (
 )
 from nyc_taxi_lakehouse.ingestion.nyc_taxi import InvalidRequestError, raw_data_path
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture(scope="session")
 def spark() -> SparkSession:

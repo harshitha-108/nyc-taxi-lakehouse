@@ -17,6 +17,8 @@ from nyc_taxi_lakehouse.gold.geographic import (
 )
 from nyc_taxi_lakehouse.gold.processor import GoldRequest, gold_partition_path
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture(scope="session")
 def spark() -> SparkSession:

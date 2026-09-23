@@ -27,6 +27,8 @@ from nyc_taxi_lakehouse.storage.migrate import MigrationPaths, migrate_period
 from nyc_taxi_lakehouse.storage.smoke import main as smoke_main
 from nyc_taxi_lakehouse.storage.spark import create_spark_session
 
+pytestmark = [pytest.mark.integration, pytest.mark.docker]
+
 
 @pytest.mark.skipif(
     os.getenv("RUN_ICEBERG_INTEGRATION") != "1",
@@ -110,6 +112,7 @@ def test_iceberg_commit_failure_preserves_snapshot_and_retry(
 
 @pytest.mark.skipif(os.getenv("RUN_ICEBERG_INTEGRATION") != "1",
                     reason="Requires local MinIO and Iceberg Docker services.")
+@pytest.mark.heavy
 def test_unreachable_minio_endpoint_fails_without_fallback_and_recovers(
     tmp_path: Path,
 ) -> None:

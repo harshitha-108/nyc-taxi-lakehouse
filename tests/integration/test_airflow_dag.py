@@ -5,15 +5,17 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import pendulum
 import pytest
 
-airflow = pytest.importorskip("airflow")
+pytest.importorskip("airflow.models")
 
+import pendulum  # noqa: E402
 from airflow.models import DagBag  # noqa: E402
 from airflow.utils.state import DagRunState, TaskInstanceState  # noqa: E402
 
 from nyc_taxi_lakehouse.orchestration import airflow_stages  # noqa: E402
+
+pytestmark = [pytest.mark.integration, pytest.mark.docker]
 
 
 @pytest.fixture(scope="module")

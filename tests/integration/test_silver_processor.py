@@ -20,6 +20,8 @@ from nyc_taxi_lakehouse.silver.processor import (
     silver_partition_path,
 )
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture(scope="session")
 def spark() -> SparkSession:
