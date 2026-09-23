@@ -8,6 +8,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+.ivy2/
 .mypy_cache/
 .coverage
 coverage.xml

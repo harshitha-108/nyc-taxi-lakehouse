@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 8 — Schema Evolution & Data Contracts (PASS)
+Phase 9 — MinIO + Apache Iceberg Lakehouse Storage (PASS)
 
 ## Completed
 
@@ -43,6 +43,11 @@ Phase 8 — Schema Evolution & Data Contracts (PASS)
 - Yellow Taxi source contract v1 and metadata-only PyArrow schema validation before Bronze rebuilds
 - Deterministic logical-schema fingerprints, compatibility decisions, and atomic runtime audit reports
 - Synthetic schema-evolution and orchestration-gate regression tests
+- Local MinIO service, idempotent bucket bootstrap, and pinned Iceberg/S3A dependencies
+- Explicit Iceberg storage mode alongside the default filesystem Parquet pipeline
+- SQLite JDBC Iceberg catalog, eight period-partitioned tables, migration/inspection/smoke CLIs
+- January–June historical migration with per-period quality and Gold reconciliations
+- Real MinIO/Iceberg snapshot, overwrite, time-travel, and breaking-schema-gate integration tests
 
 ## Current Architecture
 
@@ -53,8 +58,10 @@ Silver partitions. It also creates four analytics-ready Gold Parquet datasets fr
 Phase 6 adds an independent official Taxi Zone reference dataset and an enriched pickup-zone Gold mart.
 The orchestrator also validates the Raw schema against the committed Yellow Taxi contract before any
 Bronze rebuild. Audit reports are runtime state, not business data. Historical successful Phase 7
-periods remain readable and skip processing. MinIO, Airflow, dbt, Superset, and dashboards are not
-implemented.
+periods remain readable and skip processing. Phase 9 adds an optional Iceberg publication path: local
+transformation outputs remain in place, while Spark commits period-scoped Iceberg tables whose metadata
+and data live in MinIO. A local SQLite JDBC catalog stores table pointers. Airflow, dbt, Superset, and
+dashboards are not implemented.
 
 ## Environment
 
@@ -64,6 +71,12 @@ implemented.
 - OpenJDK 17.0.20.1 (container)
 - PySpark 3.5.3 (container)
 - PyArrow 18.1.0 (container)
+- Hadoop 3.3.4 / Scala 2.12.18 (verified from Spark in the container)
+- Apache Iceberg Spark runtime 3.5_2.12 version 1.10.1
+- Hadoop AWS 3.3.4 / AWS Java SDK bundle 1.12.262 / SQLite JDBC 3.49.1.0
+- MinIO RELEASE.2025-09-07T16-13-09Z (Quay image; loopback-only local development)
+- Iceberg JDBC catalog: `lakehouse`, SQLite at `data/state/iceberg_catalog.db`
+- MinIO bucket `nyc-taxi-lakehouse`; warehouse `s3a://nyc-taxi-lakehouse/warehouse`
 
 ## How to Run
 
@@ -82,6 +95,12 @@ docker compose run --rm pipeline python -m nyc_taxi_lakehouse.gold.processor --t
 docker compose run --rm pipeline python -m nyc_taxi_lakehouse.reference.taxi_zones
 docker compose run --rm pipeline python -m nyc_taxi_lakehouse.gold.geographic --taxi-type yellow --year 2024 --month 1
 docker compose run --rm pipeline python -m nyc_taxi_lakehouse.schema.validator --taxi-type yellow --start 2024-01 --end 2024-06
+docker compose up -d minio minio-init
+docker compose run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.storage.smoke
+docker compose run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.storage.migrate --start 2024-01 --end 2024-06
+docker compose run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.storage.inspect
+docker compose run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.orchestration.pipeline --taxi-type yellow --start 2024-01 --end 2024-01 --mode incremental --storage-backend iceberg
+docker compose run --rm --no-deps -e RUN_ICEBERG_INTEGRATION=1 pipeline pytest
 ```
 
 ## Validation Completed
@@ -161,21 +180,55 @@ docker compose run --rm pipeline python -m nyc_taxi_lakehouse.schema.validator -
   contracts and show that an added nullable field can proceed through the orchestration gate.
 - The final metadata-only audit caused zero size or modification-time changes among 210 existing Raw,
   Bronze, Silver, quarantine, and Gold files inspected.
+- MinIO started from the pinned Quay image and its initializer created the bucket; rerunning the
+  initializer completed successfully against the existing bucket. The API and console bind to
+  `127.0.0.1` only.
+- A real isolated Spark/Iceberg/MinIO smoke test wrote two January rows and one February row, rewrote
+  January without changing February, observed a new snapshot, and queried the earlier snapshot.
+- January–June 2024 filesystem outputs were migrated into eight `lakehouse.nyc_taxi` Iceberg tables.
+  Per-month Bronze/Silver/quarantine counts: January 2,964,624/2,927,000/37,624; February
+  3,007,526/2,966,785/40,741; March 3,582,628/3,523,905/58,723; April
+  3,514,289/3,456,486/57,803; May 3,723,833/3,663,653/60,180; June
+  3,539,193/3,477,270/61,923. Each month reconciled in both filesystem and Iceberg.
+- Fresh Iceberg reads returned 20,332,093 Bronze, 20,015,099 valid Silver, and 316,994 quarantine
+  rows, matching existing filesystem history. Each of the eight tables has six active data files.
+  Gold row totals are daily 207, hourly 4,408, pickup location 1,550, payment 31, and pickup zone
+  1,550. Every Gold mart's `trip_count` reconciled to valid Silver each month, and exact Gold values
+  matched local Parquet in both directions.
+- Migrated pickup-zone data had non-null zone names for all 1,550 location-period rows; each month's
+  `trip_count` reconciled to valid Silver (100% geographic match at this level).
+- January Bronze was migrated twice: both writes read back 2,964,624 rows; snapshot IDs changed from
+  `6233696612276549882` to `3815177538866729148`. The final six-month Bronze total has no duplicate
+  month and six active data files. The isolated two-month test also proved unrelated-month retention.
+- MinIO inspection found 57 Iceberg metadata JSON objects and 49 Parquet objects (48 active table
+  files plus one historical Bronze file). Bronze had eight snapshots; the other tables had seven each.
+- One-month full January migration took 87.27 seconds; February–June took 82.79, 71.67, 70.80, 73.58,
+  and 70.24 seconds per month respectively. These are local measurements, not performance claims.
+- The first Iceberg-mode January incremental call adopted migrated outputs; the second recorded
+  `processed=0 skipped=1` without a download or transformation. A real breaking source-schema test
+  prevented any Bronze Iceberg table from being created in an isolated catalog.
 
 ## Tests
 
-- `pytest`: 52 tests passed, including raw-to-Bronze, Bronze-to-Silver, Silver-to-Gold, Taxi Zone
+- `pytest`: 61 tests passed in 75.05 seconds with `RUN_ICEBERG_INTEGRATION=1`, including all 52
+  Phase 8 baseline tests, raw-to-Bronze, Bronze-to-Silver, Silver-to-Gold, Taxi Zone
   reference validation, and geographic-enrichment Spark
-  integration; Gold grain, metric, reconciliation, percentage, and partition-level idempotency tests.
+  integration; Gold grain, metric, reconciliation, percentage, partition-level idempotency, and real
+  MinIO/Iceberg snapshot/time-travel tests.
 - `ruff check src tests`: passed.
 - Spark environment smoke test: passed.
 
 ## Known Issues
 
-The README roadmap retains historical placeholder labels for Phases 6–7 and a planned Phase 9 label;
-the implementation-detail sections describe the actual completed work. Airflow and object storage are
-not implemented. Spark's missing `ps` utility and native Hadoop library warnings in this minimal local
-container did not affect execution.
+The README roadmap retains historical placeholder labels for Phases 6–7, and older overview/reference
+text still describes MinIO as planned; the strict README edit rule permitted only the Phase 9 checkbox
+and new subsection. The pinned community MinIO image is archived and should not be treated as a
+production security baseline. SQLite JDBC is a local single-writer catalog, and the eight tables do
+not share one cross-table transaction. A proposed real March Bronze overwrite was blocked by the
+safety review because an earlier project instruction reserved March replay for Silver onward; no
+March Bronze commit occurred. Real January double-load and an isolated two-month overwrite
+provide the Phase 9 idempotency proof instead. Spark's missing `ps`, native Hadoop library, and S3A
+metrics-config warnings did not affect execution.
 
 ## Architecture Decisions
 
@@ -223,7 +276,14 @@ container did not affect execution.
   an order-independent fingerprint to detect structural changes before Bronze rebuilds.
 - Preserve historical completed-period state without rewriting it when adding the schema-validation
   stage. Keep runtime audit records separate from the contract and ignored by Git.
+- Keep filesystem mode as the default; only explicit Iceberg mode publishes each stage after its
+  existing local output, while historical migration reads validated Parquet without re-transforming.
+- Use a SQLite JDBC catalog because the Iceberg Hadoop catalog requires atomic rename unavailable on
+  S3-compatible object storage. Keep catalog state local/ignored and Iceberg data plus metadata in
+  MinIO. This is a local single-writer compromise, not a production metastore recommendation.
+- Partition Iceberg by source taxi type/year/month and overwrite by an explicit source-period filter;
+  preserve independent table snapshots and reject failed storage writes without silent fallback.
 
 ## Next Phase
 
-Phase 9 — MinIO + Apache Iceberg Lakehouse Storage. This phase has **not** started.
+Phase 10 — Airflow Orchestration. This phase has **not** started.

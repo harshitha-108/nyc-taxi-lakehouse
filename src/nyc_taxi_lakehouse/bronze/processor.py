@@ -20,6 +20,8 @@ from nyc_taxi_lakehouse.ingestion.nyc_taxi import (
     TaxiDataRequest,
     raw_data_path,
 )
+from nyc_taxi_lakehouse.storage.config import StorageConfig
+from nyc_taxi_lakehouse.storage.spark import create_spark_session as shared_spark_session
 
 LOGGER = logging.getLogger(__name__)
 LINEAGE_COLUMNS = (
@@ -77,13 +79,7 @@ def bronze_partition_path(request: BronzeRequest, bronze_dir: Path) -> Path:
 
 def create_spark_session(app_name: str = "nyc-taxi-bronze") -> SparkSession:
     """Create the local Spark session used by the Bronze job."""
-    return (
-        SparkSession.builder.master("local[*]")
-        .appName(app_name)
-        .config("spark.sql.shuffle.partitions", "4")
-        .config("spark.ui.showConsoleProgress", "false")
-        .getOrCreate()
-    )
+    return shared_spark_session(app_name, StorageConfig.from_env("filesystem"))
 
 
 def add_lineage_columns(

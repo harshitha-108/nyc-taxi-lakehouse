@@ -3,8 +3,32 @@ services:
     build:
       context: .
     env_file:
+      - .env.example
       - .env
     working_dir: /workspace
     volumes:
       - .:/workspace
     command: python --version
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    env_file:
+      - .env.example
+      - .env
+    command: server /data --console-address :9001
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio-data:/data
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      - minio
+    env_file:
+      - .env.example
+      - .env
+    entrypoint: /bin/sh
+    command: -c 'i=0; until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do i=$$((i+1)); [ "$$i" -lt 30 ] || exit 1; sleep 2; done; mc mb --ignore-existing "local/$$MINIO_BUCKET"'
+
+volumes:
+  minio-data:

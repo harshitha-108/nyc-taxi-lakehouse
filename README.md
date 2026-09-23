@@ -260,7 +260,7 @@ instead of Pandas so the same processing model can scale beyond this local month
 - [x] Phase 6 — Lakehouse/object storage
 - [x] Phase 7 — Containerization improvements
 - [x] Phase 8 — Schema Evolution & Data Contracts
-- [ ] Phase 9 — dbt transformations
+- [x] Phase 9 — MinIO + Apache Iceberg lakehouse storage
 - [ ] Phase 10 — Data quality and observability
 - [ ] Phase 11 — Analytics database and dashboard
 - [ ] Phase 12 — Testing improvements
@@ -494,6 +494,85 @@ flowchart TB
     CLASSIFY --> SAFE["Compatible / Warning"] --> BRONZE
     CLASSIFY --> BREAKING["Breaking"] --> BLOCK["Block Downstream Processing"]
 ```
+
+### Phase 9 — MinIO + Apache Iceberg Lakehouse Storage
+
+Phase 9 adds local S3-compatible object storage and transactional Iceberg tables without removing the
+existing filesystem pipeline. Existing commands still write local Parquet by default. An explicit
+`--storage-backend iceberg` on the multi-month orchestrator publishes each completed local Bronze,
+Silver/quarantine, Gold, and geographic stage to Iceberg after the Phase 8 Raw schema gate. Historical
+January–June outputs were migrated directly from their validated Parquet partitions, without rerunning
+business transformations. The migration command checks the schema contract before any Bronze commit.
+
+```mermaid
+flowchart TB
+    TLC["Official NYC TLC"] --> RAW["Raw Parquet"] --> GATE["Phase 8 schema gate"]
+    GATE --> SPARK["Existing PySpark transformations"]
+    SPARK --> LOCAL["Local Bronze, Silver / Quarantine,<br/>and Gold Parquet"]
+    LOCAL --> PUB["Monthly Iceberg publication<br/>or historical migration"]
+    PUB --> TABLES["Apache Iceberg tables<br/>snapshots + period replacement"]
+    CATALOG["Local SQLite JDBC catalog<br/>table pointers"] -. manages .-> TABLES
+    TABLES --> MINIO["MinIO object storage<br/>metadata + data files"]
+```
+
+MinIO provides object storage, while Iceberg supplies table metadata, snapshots, and period-scoped
+atomic table commits. Spark 3.5.3 uses the Iceberg Spark 3.5 / Scala 2.12 runtime `1.10.1`; its
+bundled Hadoop 3.3.4 uses matching `hadoop-aws` and AWS SDK bundle `1.12.262` for S3A. Iceberg's
+Hadoop catalog requires atomic filesystem rename, which an S3 object store does not provide, so this
+local single-writer setup uses an embedded SQLite JDBC catalog at the Git-ignored
+`data/state/iceberg_catalog.db`. The Iceberg warehouse is
+`s3a://nyc-taxi-lakehouse/warehouse` in MinIO. MinIO credentials come from environment files;
+`.env.example` contains clearly marked local-development values, and `.env` remains ignored. The API
+and console are bound to localhost ports 9000 and 9001. This is a local demonstration, not a
+production-ready multi-writer catalog or a managed-cloud deployment.
+
+Tables live in the `lakehouse.nyc_taxi` namespace. Bronze, valid Silver, quarantine, and all five
+Gold marts use Iceberg identity partitions on `_source_taxi_type`, `_source_year`, and `_source_month`.
+This aligns with source-period backfills and exact monthly overwrite filters without partitioning by
+trip timestamps or creating tiny daily partitions. Each table is committed separately: a failed
+multi-table run is visible as a failed stage and can be retried, but it is **not** one cross-table
+transaction. Existing source/business schemas and five Bronze lineage columns are preserved;
+aggregates retain their period-level lineage. The Taxi Zone CSV remains the small authoritative
+reference input for the existing broadcast enrichment.
+
+| Iceberg table in `lakehouse.nyc_taxi` | Jan–Jun rows | Active data files |
+| --- | ---: | ---: |
+| `bronze_trips` | 20,332,093 | 6 |
+| `silver_trips` | 20,015,099 | 6 |
+| `quarantine_trips` | 316,994 | 6 |
+| `gold_daily_trip_metrics` | 207 | 6 |
+| `gold_hourly_demand` | 4,408 | 6 |
+| `gold_pickup_location_performance` | 1,550 | 6 |
+| `gold_payment_type_summary` | 31 | 6 |
+| `gold_pickup_zone_performance` | 1,550 | 6 |
+
+Every month reconciled: Bronze = valid Silver + quarantine; each Gold mart's summed trip count equals
+valid Silver; migrated Gold rows matched their local Parquet counterparts in both directions. January
+Bronze was loaded twice: 2,964,624 rows before and after, with a new Iceberg snapshot rather than
+duplicate records. A separate real MinIO integration test replaced one synthetic month while keeping
+another month intact and queried the earlier snapshot. All six migrated pickup-zone months retained
+100% non-null zone matches. MinIO inspection found Iceberg metadata JSON and Parquet data objects.
+The Phase 8 baseline of 52 tests grew to 61 passing tests, including Docker-based MinIO/Iceberg
+write/read, replay, time travel, and breaking-contract checks; Ruff passed.
+
+From the repository root, after copying `.env.example` to `.env`, use these commands. Historical
+migration requires the earlier local Parquet outputs; a fresh clone must run the existing ingestion
+and filesystem pipeline first.
+
+```powershell
+docker compose build pipeline
+docker compose up -d minio minio-init
+docker compose run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.storage.smoke
+docker compose run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.storage.migrate --start 2024-01 --end 2024-06
+docker compose run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.storage.inspect --dataset bronze --year 2024 --month 1
+docker compose run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.orchestration.pipeline --taxi-type yellow --start 2024-01 --end 2024-01 --mode incremental --storage-backend iceberg
+docker compose run --rm --no-deps -e RUN_ICEBERG_INTEGRATION=1 pipeline pytest
+```
+
+The bucket initializer and monthly migration are idempotent. The Iceberg-mode incremental command
+adopted the already migrated January period, then a second run skipped it without a download or
+transformation. The pinned community MinIO image is for loopback-only local development; review its
+archived upstream and security status before considering any non-local use.
 
 ## Production mapping (reference only)
 

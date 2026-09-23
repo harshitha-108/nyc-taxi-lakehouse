@@ -142,6 +142,27 @@ def test_breaking_contract_blocks_all_downstream_stages(stage_harness) -> None:
     assert "REMOVED_COLUMN" in str(state.stages["schema_validation"]["metrics"])
 
 
+def test_breaking_contract_blocks_iceberg_bronze_publish(
+    stage_harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A breaking Phase 8 gate must prevent the Iceberg commit callback."""
+    paths, period, calls, write_source = stage_harness
+    write_source(breaking=True)
+    monkeypatch.setattr(pipeline, "publish_dataset", lambda *args: calls.append("iceberg"))
+    with pytest.raises(PipelineError, match="Breaking schema contract"):
+        run_period(
+            period,
+            taxi_type="yellow",
+            mode="replay",
+            from_stage="ingestion",
+            run_id="breaking-iceberg",
+            paths=paths,
+            store=StateStore(paths.state_dir),
+            storage_backend="iceberg",
+        )
+    assert calls == ["ingestion", "schema_validation"]
+
+
 def test_breaking_contract_marks_run_unsuccessful(stage_harness) -> None:
     paths, period, calls, write_source = stage_harness
     write_source(breaking=True)

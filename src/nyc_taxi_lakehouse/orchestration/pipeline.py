@@ -6,7 +6,7 @@ import argparse
 import logging
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from nyc_taxi_lakehouse.bronze.processor import (
@@ -47,6 +47,9 @@ from nyc_taxi_lakehouse.silver.processor import (
     quarantine_partition_path,
     silver_partition_path,
 )
+from nyc_taxi_lakehouse.storage.config import StorageConfig
+from nyc_taxi_lakehouse.storage.publish import publish_dataset, validate_published_period
+from nyc_taxi_lakehouse.storage.spark import create_spark_session as storage_spark_session
 
 LOGGER = logging.getLogger(__name__)
 STAGES = ("ingestion", "schema_validation", "bronze", "silver", "gold", "geographic")
@@ -135,6 +138,18 @@ def _stage_state(
     }
 
 
+def _validate_iceberg_artifacts(
+    taxi_type: str, period: ProcessingPeriod
+) -> dict[str, int]:
+    spark = storage_spark_session(
+        "nyc-taxi-iceberg-state-validation", StorageConfig.from_env("iceberg")
+    )
+    try:
+        return validate_published_period(spark, taxi_type, period)
+    finally:
+        spark.stop()
+
+
 def run_period(
     period: ProcessingPeriod,
     *,
@@ -144,6 +159,7 @@ def run_period(
     run_id: str,
     paths: PipelinePaths,
     store: StateStore,
+    storage_backend: str = "filesystem",
 ) -> PeriodRunResult:
     """Run one period, or safely adopt/skip a complete existing period in incremental mode."""
     started_at = time.monotonic()
@@ -151,6 +167,8 @@ def run_period(
     if mode == "incremental" and previous and previous.status == "SUCCESS":
         try:
             metrics = validate_period_artifacts(period, taxi_type, paths)
+            if storage_backend == "iceberg":
+                metrics["iceberg_counts"] = _validate_iceberg_artifacts(taxi_type, period)
         except Exception:
             LOGGER.warning(
                 "State for %s is stale or incomplete; retrying period.", period.identifier
@@ -162,6 +180,8 @@ def run_period(
     if mode == "incremental" and previous is None:
         try:
             metrics = validate_period_artifacts(period, taxi_type, paths)
+            if storage_backend == "iceberg":
+                metrics["iceberg_counts"] = _validate_iceberg_artifacts(taxi_type, period)
         except Exception:
             pass
         else:
@@ -219,7 +239,13 @@ def run_period(
         else:
             state.stages["schema_validation"] = {"status": "SKIPPED"}
 
-        spark = create_spark_session("nyc-taxi-multi-month")
+        spark = (
+            create_spark_session("nyc-taxi-multi-month")
+            if storage_backend == "filesystem"
+            else storage_spark_session(
+                "nyc-taxi-multi-month", StorageConfig.from_env("iceberg")
+            )
+        )
         stage_start = time.monotonic()
         if STAGE_INDEX[from_stage] <= STAGE_INDEX["bronze"]:
             bronze = write_bronze_partition(
@@ -229,6 +255,10 @@ def run_period(
                 bronze_dir=paths.bronze_dir,
             )
             metrics["bronze_rows"] = bronze.bronze_rows
+            if storage_backend == "iceberg":
+                metrics["iceberg_bronze"] = publish_dataset(
+                    spark, "bronze", bronze.target_path, taxi_type, period
+                )
             state.stages["bronze"] = _stage_state("SUCCESS", stage_start, asdict(bronze))
         else:
             if not _directory_has_parquet(
@@ -251,6 +281,13 @@ def run_period(
             metrics.update(
                 {"silver_valid_rows": silver.valid_rows, "quarantine_rows": silver.rejected_rows}
             )
+            if storage_backend == "iceberg":
+                metrics["iceberg_silver"] = publish_dataset(
+                    spark, "silver", silver.silver_path, taxi_type, period
+                )
+                metrics["iceberg_quarantine"] = publish_dataset(
+                    spark, "quarantine", silver.quarantine_path, taxi_type, period
+                )
             state.stages["silver"] = _stage_state("SUCCESS", stage_start, asdict(silver))
         else:
             if not _directory_has_parquet(
@@ -270,6 +307,19 @@ def run_period(
                 gold_dir=paths.gold_dir,
             )
             metrics["gold_reconciliation_rows"] = gold.input_rows
+            if storage_backend == "iceberg":
+                for dataset_name in GOLD_DATASETS:
+                    metrics[f"iceberg_{dataset_name}"] = publish_dataset(
+                        spark,
+                        dataset_name,
+                        gold_partition_path(
+                            GoldRequest(taxi_type, period.year, period.month),
+                            paths.gold_dir,
+                            dataset_name,
+                        ),
+                        taxi_type,
+                        period,
+                    )
             state.stages["gold"] = _stage_state("SUCCESS", stage_start, asdict(gold))
         else:
             state.stages["gold"] = {"status": "SKIPPED"}
@@ -283,6 +333,18 @@ def run_period(
             reference_dir=paths.reference_dir,
         )
         metrics["geographic_match_percentage"] = geographic.match_percentage
+        if storage_backend == "iceberg":
+            metrics["iceberg_pickup_zone_performance"] = publish_dataset(
+                spark,
+                "pickup_zone_performance",
+                paths.gold_dir
+                / "pickup_zone_performance"
+                / taxi_type
+                / f"year={period.year}"
+                / f"month={period.month:02d}",
+                taxi_type,
+                period,
+            )
         state.stages["geographic"] = _stage_state("SUCCESS", stage_start, asdict(geographic))
         state.status, state.completed_at, state.metrics = "SUCCESS", StateStore.now(), metrics
         store.save_period(state)
@@ -311,13 +373,20 @@ def run_pipeline(
     mode: str = "incremental",
     from_stage: str = "ingestion",
     paths: PipelinePaths | None = None,
+    storage_backend: str = "filesystem",
 ) -> list[PeriodRunResult]:
     """Run independent periods, continuing after failures and writing run history atomically."""
     if mode not in ("incremental", "replay") or from_stage not in STAGE_INDEX:
         raise PipelineError(
             "Mode must be incremental/replay and from-stage must be a pipeline stage."
         )
+    if storage_backend not in ("filesystem", "iceberg"):
+        raise PipelineError(f"Unsupported storage backend: {storage_backend}")
+    if storage_backend == "iceberg":
+        StorageConfig.from_env("iceberg")
     active_paths = paths or PipelinePaths()
+    if paths is None and storage_backend == "iceberg":
+        active_paths = replace(active_paths, state_dir=Path("data/state/iceberg"))
     run_id = f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
     store = StateStore(active_paths.state_dir)
     ingest_taxi_zones(reference_dir=active_paths.reference_dir)
@@ -334,6 +403,7 @@ def run_pipeline(
                     run_id=run_id,
                     paths=active_paths,
                     store=store,
+                    storage_backend=storage_backend,
                 )
             )
         except PipelineError as exc:
@@ -367,6 +437,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--end", required=True)
     parser.add_argument("--mode", default="incremental", choices=("incremental", "replay"))
     parser.add_argument("--from-stage", default="ingestion", choices=STAGES)
+    parser.add_argument(
+        "--storage-backend", choices=("filesystem", "iceberg"), default="filesystem"
+    )
     return parser.parse_args()
 
 
@@ -380,6 +453,7 @@ def main() -> int:
             taxi_type=args.taxi_type,
             mode=args.mode,
             from_stage=args.from_stage,
+            storage_backend=args.storage_backend,
         )
     except (PipelineError, ValueError) as exc:
         LOGGER.error("Pipeline failed: %s", exc)
