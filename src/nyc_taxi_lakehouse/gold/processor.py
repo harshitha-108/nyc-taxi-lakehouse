@@ -14,7 +14,6 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from pyspark import StorageLevel
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import TimestampType
@@ -379,7 +378,7 @@ def process_gold_partition(
         request.month,
         input_path,
     )
-    silver_dataframe = spark.read.parquet(str(input_path)).persist(StorageLevel.MEMORY_AND_DISK)
+    silver_dataframe = spark.read.parquet(str(input_path))
     temporary_paths: dict[str, Path] = {}
     try:
         input_metrics = silver_dataframe.agg(
@@ -444,9 +443,6 @@ def process_gold_partition(
         for temporary_path in temporary_paths.values():
             _remove_directory(temporary_path)
         raise
-    finally:
-        silver_dataframe.unpersist()
-
     completed_datasets: dict[str, GoldDatasetResult] = {}
     for dataset_name, result in dataset_results.items():
         output_files = list(result.target_path.glob("part-*.parquet"))

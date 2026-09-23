@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
-from pyspark.sql import SparkSession
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from nyc_taxi_lakehouse.bronze.processor import create_spark_session
@@ -125,3 +125,26 @@ def test_failed_gold_promotion_preserves_all_four_prior_marts(
         assert not list(path.parent.glob("*.__temporary__*"))
     recovered = process_gold_partition(spark, request, silver_dir=silver_dir, gold_dir=gold_dir)
     assert all(item["rows"] > 0 for item in recovered.datasets.values())
+
+
+def test_gold_does_not_persist_silver_input(
+    spark: SparkSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All four marts remain correct without caching the full Silver input."""
+    request = GoldRequest("yellow", 2024, 1)
+    silver_dir, gold_dir = tmp_path / "silver", tmp_path / "gold"
+    _silver_dataframe(spark).write.parquet(str(_silver_partition_path(silver_dir, request)))
+
+    def fail_persist(_frame: DataFrame, *_args: object, **_kwargs: object) -> None:
+        raise AssertionError("Gold must not persist the full Silver input")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(DataFrame, "persist", fail_persist)
+        result = process_gold_partition(spark, request, silver_dir=silver_dir, gold_dir=gold_dir)
+    assert result.input_rows == 2
+    assert {name: item["rows"] for name, item in result.datasets.items()} == {
+        "daily_trip_metrics": 1,
+        "hourly_demand": 2,
+        "pickup_location_performance": 2,
+        "payment_type_summary": 2,
+    }
