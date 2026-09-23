@@ -28,7 +28,7 @@ def dag():
 def test_dag_graph_schedule_and_retries(dag) -> None:
     ordered = (
         "ingest_raw", "validate_schema", "bronze", "silver", "gold", "geographic",
-        "publish_iceberg", "validate_reconciliation",
+        "publish_iceberg", "publish_serving", "validate_reconciliation",
     )
     assert set(dag.task_ids) == set(ordered)
     for before, after in zip(ordered[:-1], ordered[1:], strict=True):
@@ -39,6 +39,7 @@ def test_dag_graph_schedule_and_retries(dag) -> None:
     assert dag.get_task("ingest_raw").retries == 2
     assert dag.get_task("validate_schema").retries == 0
     assert dag.get_task("bronze").retries == 1
+    assert dag.get_task("publish_serving").retries == 1
 
 
 def test_monthly_timetable_supports_controlled_historical_interval(dag) -> None:
@@ -66,8 +67,9 @@ def test_filesystem_dag_run_uses_real_airflow_states_without_processing(
     assert run.state == DagRunState.SUCCESS
     states = {task.task_id: task.state for task in run.get_task_instances()}
     assert states["publish_iceberg"] == TaskInstanceState.SKIPPED
+    assert states["publish_serving"] == TaskInstanceState.SUCCESS
     assert states["validate_reconciliation"] == TaskInstanceState.SUCCESS
-    assert len(calls) == 8
+    assert len(calls) == 9
     assert all(period == "2024-03" and mode == "filesystem" for _, period, mode in calls)
 
 
@@ -114,7 +116,37 @@ def test_compatible_schema_and_iceberg_publication_are_reachable(
         run_conf={"period": "2024-05", "storage_backend": "iceberg"},
     )
     assert run.state == DagRunState.SUCCESS
-    assert len(calls) == 8
+    assert len(calls) == 9
     states = {task.task_id: task.state for task in run.get_task_instances()}
     assert states["bronze"] == TaskInstanceState.SUCCESS
     assert states["publish_iceberg"] == TaskInstanceState.SUCCESS
+
+
+def test_serving_failure_does_not_change_upstream_success(
+    dag, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = []
+
+    def fake_stage(stage, period, taxi_type, storage_backend, paths=None):
+        calls.append(stage)
+        if stage == "publish_serving":
+            raise RuntimeError("Serving unavailable")
+        return {"rows": 2}
+
+    monkeypatch.setattr(airflow_stages, "execute_stage", fake_stage)
+    task = dag.get_task("publish_serving")
+    original_retries = task.retries
+    task.retries = 0  # Test terminal failure, not Airflow's wall-clock retry delay.
+    try:
+        run = dag.test(
+            execution_date=datetime.now(UTC) - timedelta(days=4),
+            run_conf={"period": "2024-06", "storage_backend": "iceberg"},
+        )
+    finally:
+        task.retries = original_retries
+    assert run.state == DagRunState.FAILED
+    states = {item.task_id: item.state for item in run.get_task_instances()}
+    assert states["gold"] == TaskInstanceState.SUCCESS
+    assert states["publish_iceberg"] == TaskInstanceState.SUCCESS
+    assert states["publish_serving"] == TaskInstanceState.FAILED
+    assert states["validate_reconciliation"] == TaskInstanceState.UPSTREAM_FAILED

@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 10 — Airflow Production Orchestration (PASS)
+Phase 11 — Analytics Serving Layer & Mobility Dashboard (PASS)
 
 ## Completed
 
@@ -52,6 +52,13 @@ Phase 10 — Airflow Production Orchestration (PASS)
 - LocalExecutor with a separate PostgreSQL metadata database, Docker health checks, and idempotent init
 - Paused-by-default schedule, manual period override, bounded backfill dry-run, and task-level retries
 - Isolated real Airflow DAG-run tests for success, optional skip, and breaking-schema blocking
+- Separate PostgreSQL analytics and Superset metadata databases/owner roles on the existing server
+- Five period-keyed, indexed serving tables populated from validated compact Gold Parquet
+- One-transaction-per-period five-mart replacement with value, count, and revenue reconciliation
+- Real isolated PostgreSQL idempotency, unrelated-month, and rollback tests
+- Airflow `publish_serving` task with filesystem/Iceberg compatibility and final serving reconciliation
+- Pinned Superset 6.0.0 local dashboard, REST bootstrap, and ten saved PostgreSQL-backed charts
+- Read-only six-month serving reconciliation and reusable SQL examples
 
 ## Current Architecture
 
@@ -67,7 +74,10 @@ transformation outputs remain in place, while Spark commits period-scoped Iceber
 and data live in MinIO. A local SQLite JDBC catalog stores table pointers. Phase 10 adds an Airflow DAG
 that coordinates the same stage processors with separate task states, optional Iceberg publication,
 and final reconciliation. Airflow uses PostgreSQL for orchestration state and leaves the Phase 7 CLI
-state files intact; dbt, Superset, and dashboards are not implemented.
+state files intact. Phase 11 adds a separate PostgreSQL analytics database containing only compact
+Gold-derived marts, plus a third PostgreSQL database for Superset metadata. The serving publisher
+reads the validated local Gold Parquet path in both filesystem and Iceberg modes, with one five-table
+transaction per source period. Superset queries serving tables only. dbt is not implemented.
 
 ## Environment
 
@@ -86,6 +96,10 @@ state files intact; dbt, Superset, and dashboards are not implemented.
 - Airflow 2.10.5 on Python 3.11.16, LocalExecutor, PostgreSQL 16-alpine metadata database
 - DAG `nyc_taxi_monthly_lakehouse`; monthly UTC interval, paused on creation, `catchup=False`
 - Airflow web UI bound to `127.0.0.1:8080`; scheduler/webserver run as UID 50000
+- PostgreSQL 16.15: `airflow_metadata`, `nyc_taxi_analytics`, and `superset_metadata` use distinct
+  owner roles; serving business tables are under the `analytics` schema
+- Apache Superset 6.0.0 image (Python 3.10.19) with `psycopg2-binary==2.9.10`; UI on
+  `127.0.0.1:8088`, PostgreSQL-backed metadata, and local in-memory rate limiting
 
 ## How to Run
 
@@ -116,6 +130,14 @@ docker compose --profile airflow ps
 docker compose --profile airflow run --rm --no-deps --user airflow airflow-init airflow dags list
 docker compose --profile airflow run --rm --no-deps --user airflow airflow-init airflow dags backfill nyc_taxi_monthly_lakehouse --start-date 2024-03-01 --end-date 2024-03-01 --dry-run
 docker compose --profile airflow run --rm --no-deps --user airflow -e RUN_ICEBERG_INTEGRATION=1 airflow-init pytest -p no:cacheprovider -q
+docker compose --profile airflow --profile dashboard build pipeline airflow-init superset
+docker compose --profile airflow run --rm analytics-db-init
+docker compose --profile airflow run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.serving.publisher --taxi-type yellow --start 2024-01 --end 2024-06
+docker compose --profile airflow run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.serving.reconciliation --start 2024-01 --end 2024-06
+docker compose --profile airflow --profile dashboard up -d superset
+docker compose --profile airflow --profile dashboard run --rm --no-deps pipeline python scripts/bootstrap_dashboard.py
+docker compose --profile airflow --profile dashboard run --rm --no-deps pipeline python -m scripts.smoke_dashboard
+docker compose --profile airflow --profile dashboard run --rm --no-deps --user airflow -e RUN_ICEBERG_INTEGRATION=1 -e RUN_SERVING_INTEGRATION=1 -e RUN_SUPERSET_INTEGRATION=1 airflow-init pytest -p no:cacheprovider -q
 ```
 
 ## Validation Completed
@@ -236,20 +258,48 @@ docker compose --profile airflow run --rm --no-deps --user airflow -e RUN_ICEBER
   Period tests covered January, December, the year boundary, and an explicit March replay override.
 - After the Compose change, MinIO bucket initialization succeeded and a fresh Iceberg read returned
   20,332,093 total Bronze rows and 2,964,624 January rows (six active files; eight snapshots).
+- January Gold-to-serving publication and an identical rerun both represented 2,927,000 trips in
+  each of the five marts. An isolated PostgreSQL test proved target-period replacement, unchanged
+  February data, and rollback of all five January tables after a duplicate-key insert failure.
+- January–June serving publication reconciled every Gold business value and all five mart trip totals
+  to 20,015,099 valid Silver rows. Monthly valid-trip counts were 2,927,000; 2,966,785; 3,523,905;
+  3,456,486; 3,663,653; and 3,477,270. Serving mart row totals were daily 207, hourly 4,408,
+  pickup-location 1,550, payment 31, and pickup-zone 1,550.
+- Per-month serving publication times were 0.69, 0.73, 1.12, 1.05, 0.77, and 0.84 seconds for
+  January–June respectively. Five read-only serving SQL examples took 0.0030–0.0055 seconds each
+  in one local client-observed run; no lakehouse-vs-PostgreSQL speedup is claimed.
+- January–June highest-volume pickup date was 2024-05-16 (141,673 trips); hour 18 had 1,434,476
+  trips; Manhattan had 17,845,670 pickup trips; Manhattan/Midtown Center led zones with 941,218;
+  payment type 1 accounted for 15,111,735. These values came from serving SQL, not hard-coded logic.
+- The real Airflow serving-stage adapter republished January successfully in filesystem and Iceberg
+  modes. Isolated DAG runs verified the nine-task order, schema blocking, optional Iceberg skip, and
+  serving failure isolation (Gold/Iceberg success retained, serving/downstream failed). The live
+  scheduler listed nine task IDs and zero DAG import errors when invoked through its entrypoint.
+- Superset initialization succeeded in its own PostgreSQL metadata database, and the service became
+  healthy; re-running its initializer exited successfully without recreating the account. The
+  idempotent REST bootstrap created one analytics connection, five serving datasets,
+  ten charts, two scoped filters, and the `NYC Urban Mobility Overview` dashboard. All ten saved
+  charts executed through Superset's chart-data API and returned rows.
+- Read-only Iceberg inspection after publication found the existing eight tables with six active
+  data files each and unchanged September 22 snapshot commit times; Bronze, Silver, quarantine,
+  and five Gold row totals remained 20,332,093 / 20,015,099 / 316,994 / 207 / 4,408 / 1,550 /
+  31 / 1,550. The latest local Raw/Bronze/Silver/Gold file timestamp predated Phase 11.
 
 ## Tests
 
-- `pytest`: 76 tests passed in 100.06 seconds as the non-root Airflow user with
-  `RUN_ICEBERG_INTEGRATION=1`, preserving the 61-test Phase 9 baseline and adding Airflow DAG,
-  period, schema-gate, storage-mode, and real DAG-run state tests.
-- `ruff check src tests airflow`: passed.
+- `pytest`: 89 passed in the final 88.94-second run as the non-root Airflow user with
+  `RUN_ICEBERG_INTEGRATION=1`, `RUN_SERVING_INTEGRATION=1`, and
+  `RUN_SUPERSET_INTEGRATION=1`; all 76 Phase 10 tests remain green.
+- `ruff check src tests airflow scripts`: passed.
+- `docker compose --profile airflow --profile dashboard config --quiet`: passed.
+- Superset chart-data API: ten of ten charts executed and returned rows.
 - Spark environment smoke test: passed.
 
 ## Known Issues
 
 The README roadmap retains historical placeholder labels for Phases 6–7, and older overview/reference
 text still describes MinIO and Airflow as planned; strict README edit rules preserve those earlier
-sections while the Phase 9–10 implementation subsections describe the current system. The pinned
+sections while the Phase 9–11 implementation subsections describe the current system. The pinned
 community MinIO image is archived and should not be treated as a
 production security baseline. SQLite JDBC is a local single-writer catalog, and the eight tables do
 not share one cross-table transaction. A proposed real March Bronze overwrite was blocked by the
@@ -260,8 +310,15 @@ metrics-config warnings did not affect execution. Airflow CLI warns that optiona
 so graphical CLI rendering is unavailable; the UI and DAG parser work. The Airflow service setup is
 for local development, not a production security baseline. The monthly source may not yet be
 published when a current interval closes, so the paused DAG should only be enabled with awareness of
-TLC release timing. No real historical Airflow backfill or full Spark transformation was run in this
-phase; isolated Airflow execution and a March dry-run establish control-plane behavior.
+TLC release timing. No real historical Airflow backfill or full Spark transformation was run in
+Phase 10; isolated Airflow execution and a March dry-run establish control-plane behavior. Phase 11
+publishes from local Gold Parquet rather than reading Iceberg directly so serving also works in
+filesystem mode; Iceberg and serving remain independently validated paths. The Superset setup is
+local-only: it uses in-memory rate limiting and has no Content Security Policy, which Superset warns
+about on startup. The dashboard has source-month and scoped pickup-borough filters but no arbitrary
+date-range filter across all marts. The REST smoke verifies saved layout and all chart queries; a
+browser-based visual-regression test or screenshot was not performed. No formal database-vs-lakehouse
+performance comparison was attempted.
 
 ## Architecture Decisions
 
@@ -322,7 +379,19 @@ phase; isolated Airflow execution and a March dry-run establish control-plane be
   Keep Airflow task state distinct from Phase 7 CLI state and the Iceberg SQLite catalog.
 - Return only small JSON-safe metadata through XCom; use existing partition replacement for data
   idempotency, not Airflow retry state as a substitute.
+- Reuse the PostgreSQL server but separate Airflow, analytics, and Superset metadata into different
+  databases and owner roles. Keep business tables under `analytics`, not Airflow metadata or `public`.
+- Publish the already validated, compact Gold Parquet from both storage modes; do not re-transform
+  Raw/Silver or duplicate the 20-million-row trip-level dataset in PostgreSQL.
+- Include source period in every serving primary key because the pickup date can fall outside the
+  source month. Add only BI-useful date, location, payment, and borough/zone indexes.
+- Use one PostgreSQL transaction across all five marts for each period, with read-back, metric, and
+  cross-mart reconciliation before commit. Roll back all five on any failure.
+- Bootstrap Superset via supported REST APIs and store its metadata separately; use a pinned image
+  plus only the missing PostgreSQL driver, without Redis/Celery for this local dashboard.
 
 ## Next Phase
 
-Phase 11 — Analytics database and dashboard. This phase has **not** started.
+Phase 12 — Testing improvements. This phase has **not** started. Candidate work: broaden
+schema/quality/property-based coverage, automate dashboard visual checks, and add failure-injection
+scenarios; do not assume those features are already implemented.

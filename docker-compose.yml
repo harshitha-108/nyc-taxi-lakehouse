@@ -46,6 +46,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+  analytics-db-init:
+    build:
+      context: .
+      target: pipeline
+    env_file: [.env.example, .env]
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+    command: ["python", "scripts/init_serving_databases.py"]
   airflow-init:
     build:
       context: .
@@ -82,6 +94,8 @@ services:
     depends_on:
       airflow-init:
         condition: service_completed_successfully
+      analytics-db-init:
+        condition: service_completed_successfully
     command: ["airflow", "scheduler"]
     healthcheck:
       test: ["CMD-SHELL", "/usr/local/bin/airflow-entrypoint.sh airflow jobs check --job-type SchedulerJob --hostname $$(hostname)"]
@@ -111,6 +125,43 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+  superset-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.superset
+    image: nyc-taxi-lakehouse-superset:6.0.0
+    profiles: ["dashboard"]
+    env_file: [.env.example, .env]
+    environment: &superset-environment
+      SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
+    volumes: &superset-volumes
+      - ./scripts/superset_config.py:/app/pythonpath/superset_config.py:ro
+      - ./scripts/superset-init.sh:/app/bootstrap/superset-init.sh:ro
+    depends_on:
+      analytics-db-init:
+        condition: service_completed_successfully
+    command: ["/bin/sh", "/app/bootstrap/superset-init.sh"]
+  superset:
+    build:
+      context: .
+      dockerfile: Dockerfile.superset
+    image: nyc-taxi-lakehouse-superset:6.0.0
+    profiles: ["dashboard"]
+    env_file: [.env.example, .env]
+    environment: *superset-environment
+    volumes: *superset-volumes
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    command: ["gunicorn", "--bind", "0.0.0.0:8088", "--workers", "2", "--timeout", "120", "superset.app:create_app()"]
+    ports:
+      - "127.0.0.1:8088:8088"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8088/health >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 60s
 
 volumes:
   minio-data:

@@ -24,6 +24,8 @@ from nyc_taxi_lakehouse.orchestration.pipeline import PipelinePaths, validate_pe
 from nyc_taxi_lakehouse.orchestration.state import ProcessingPeriod
 from nyc_taxi_lakehouse.reference.taxi_zones import ingest_taxi_zones
 from nyc_taxi_lakehouse.schema.validator import Compatibility, validate_and_report
+from nyc_taxi_lakehouse.serving.config import ServingConfig
+from nyc_taxi_lakehouse.serving.publisher import publish_period, validate_period
 from nyc_taxi_lakehouse.silver.processor import (
     SilverRequest,
     bronze_partition_path,
@@ -156,6 +158,12 @@ def execute_stage(
             return {"snapshots": snapshots}
         finally:
             spark.stop()
+    if stage == "publish_serving":
+        result = publish_period(
+            ServingConfig.from_env(), period, taxi_type=taxi_type, gold_dir=active.gold_dir
+        )
+        return {"marts": {name: item.rows for name, item in result.marts.items()},
+                "trip_count": next(iter(result.marts.values())).trip_count}
     if stage == "validate_reconciliation":
         validate_period_artifacts(period, taxi_type, active)
         spark = create_spark_session(
@@ -183,9 +191,15 @@ def execute_stage(
                 for name in counts:
                     if iceberg_counts[name] != counts[name]:
                         raise ValueError(f"Iceberg/local count mismatch for {name}")
+            serving = validate_period(
+                ServingConfig.from_env(), period, taxi_type=taxi_type, gold_dir=active.gold_dir
+            )
+            if any(item.trip_count != counts["silver"] for item in serving.values()):
+                raise ValueError(f"Serving/Silver count mismatch for {period.identifier}")
             return {"bronze_rows": counts["bronze"], "valid_rows": counts["silver"],
                     "quarantine_rows": counts["quarantine"],
-                    "gold_marts_reconciled": len(GOLD_DATASETS) + 1}
+                    "gold_marts_reconciled": len(GOLD_DATASETS) + 1,
+                    "serving_marts_reconciled": len(serving)}
         finally:
             spark.stop()
     raise ValueError(f"Unknown Airflow stage: {stage}")

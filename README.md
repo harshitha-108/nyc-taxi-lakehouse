@@ -262,7 +262,7 @@ instead of Pandas so the same processing model can scale beyond this local month
 - [x] Phase 8 — Schema Evolution & Data Contracts
 - [x] Phase 9 — MinIO + Apache Iceberg lakehouse storage
 - [x] Phase 10 — Airflow Production Orchestration
-- [ ] Phase 11 — Analytics database and dashboard
+- [x] Phase 11 — Analytics Serving Layer & Mobility Dashboard
 - [ ] Phase 12 — Testing improvements
 - [ ] Phase 13 — CI/CD
 - [ ] Phase 14 — Performance/scalability
@@ -661,6 +661,94 @@ Bronze `upstream_failed`. The final Docker suite passed **76 tests in 100.06 sec
 the Phase 9 MinIO/Iceberg integration tests; Ruff passed. An existing January Iceberg Bronze table
 remained readable after the Compose changes (20,332,093 total rows; 2,964,624 for January). No
 January–June business transformations were rerun merely to demonstrate Airflow.
+
+### Phase 11 — Analytics Serving Layer & Mobility Dashboard
+
+The serving layer publishes the existing **validated Gold Parquet**, not Raw, Bronze, Silver, or
+quarantine, into a separate PostgreSQL analytics database. This source choice keeps publication
+independent of optional Iceberg mode: the same compact Gold outputs can be served when the DAG runs
+with filesystem storage. Iceberg/MinIO remains the lakehouse storage path, not a PostgreSQL
+replacement. Superset queries PostgreSQL only. No historical upstream partitions were rebuilt for
+this phase.
+
+```mermaid
+flowchart LR
+    GOLD["Validated Gold marts"] --> ICEBERG["Iceberg tables"] --> MINIO["MinIO"]
+    GOLD --> PUBLISH["Transactional serving publisher"] --> POSTGRES[("PostgreSQL analytics")]
+    POSTGRES --> SUPERSET["Apache Superset"] --> BI["Mobility dashboard"]
+    AIRFLOW["Airflow control plane"] -.-> PUBLISH
+```
+
+One PostgreSQL 16.15 server hosts **three separate databases and owner roles**:
+`airflow_metadata`/`airflow_dev`, `nyc_taxi_analytics`/`analytics_dev`, and
+`superset_metadata`/`superset_dev`. The five serving tables live in the `analytics` schema:
+`daily_trip_metrics` (source period + pickup date), `hourly_demand` (period + date + hour),
+`pickup_location_performance` (period + location ID), `payment_type_summary` (period + payment type),
+and `pickup_zone_performance` (period + location ID with official zone attributes). Each keeps the
+Gold metrics and `_source_taxi_type`, `_source_year`, `_source_month`, `_gold_processed_at`; publication
+adds `_serving_published_at`. A primary key covers taxi type, source year/month, and each mart's grain.
+Date, date/hour, location, payment, and borough/zone indexes support the expected dashboard queries.
+The source period remains part of daily/hourly keys because a monthly source file can contain pickup
+dates outside its nominal month.
+
+The publisher reads compact Gold rows with PyArrow, then replaces **all five tables for one source
+month in one PostgreSQL transaction**. It deletes only that taxi type/year/month, inserts, compares
+every business value against Gold (floating values with tolerance, exact decimal money), reconciles
+trip counts and total amounts across marts, and commits. Any failed insert or reconciliation rolls
+the five-table period back. Other months are untouched. An isolated real-PostgreSQL test proved
+idempotent republishing, unrelated-February preservation, and rollback after an intentional duplicate
+key error. Runtime credentials come from the ignored `.env`; `.env.example` contains local-only
+development placeholders. No serving datasets or PostgreSQL volumes are committed.
+
+January was published and rerun first. January's five mart trip totals remained **2,927,000**.
+The January–June backfill then reconciled **20,015,099** valid Silver trips against each of the five
+Gold and PostgreSQL mart trip totals. Serving table row counts were 207 daily, 4,408 hourly, 1,550
+pickup-location, 31 payment-type, and 1,550 pickup-zone rows. Every published Gold business value
+matched its serving copy. Individual month publications took 0.69–1.12 seconds in this local run;
+these are observations, not a benchmark against Iceberg. Example read-only SQL is in
+`sql/serving_examples.sql`.
+
+Airflow now has a ninth task, `publish_serving`, between optional `publish_iceberg` and final
+`validate_reconciliation`. It runs after a skipped Iceberg task in filesystem mode, has one retry,
+and returns only table row counts and trip count through XCom. A serving failure marks that task and
+downstream validation failed; successful Gold/Iceberg tasks retain their states. The final task also
+checks the serving period against Gold and valid Silver. The breaking-schema gate still blocks all
+downstream work.
+
+Apache Superset **6.0.0** (its pinned image runs Python 3.10.19) uses a dedicated metadata database;
+the small derived image adds the PostgreSQL `psycopg2-binary` driver missing from the base runtime.
+The one `NYC Urban Mobility Overview` dashboard is reproducibly created/updated by
+`scripts/bootstrap_dashboard.py` through Superset's REST API, not direct metadata-table edits. It
+contains total trips, TLC total amount, trip-count-weighted average distance/duration, daily trips,
+daily total amount, hourly pickup demand, pickup trips by borough, top pickup zones, and payment-type
+trips. Source-month filtering applies across the marts; pickup-borough filtering is scoped to
+geographic charts. TLC `total_amount` is a trip-charge/revenue-like measure, not company accounting
+revenue. The saved dashboard has five datasets and ten charts; a forced Superset chart-data API smoke
+test executed all ten against PostgreSQL (daily charts returned 188 date groups, hourly demand 24
+hour groups). Arbitrary date-range filtering across non-date-grained marts is not included.
+
+From the repository root, after copying `.env.example` to the ignored `.env` and starting Docker
+Desktop, use these Phase 11 commands. The pinned Superset UI is bound to
+[localhost:8088](http://localhost:8088); example credentials are for local development only.
+
+```powershell
+docker compose --profile airflow --profile dashboard build pipeline airflow-init superset
+docker compose --profile airflow run --rm analytics-db-init
+docker compose --profile airflow run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.serving.publisher --taxi-type yellow --start 2024-01 --end 2024-01
+docker compose --profile airflow run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.serving.publisher --taxi-type yellow --start 2024-01 --end 2024-06
+docker compose --profile airflow run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.serving.reconciliation --start 2024-01 --end 2024-06
+docker compose --profile airflow --profile dashboard up -d superset
+docker compose --profile airflow --profile dashboard run --rm --no-deps pipeline python scripts/bootstrap_dashboard.py
+docker compose --profile airflow --profile dashboard run --rm --no-deps pipeline python -m scripts.smoke_dashboard
+docker compose --profile airflow --profile dashboard run --rm --no-deps --user airflow -e RUN_ICEBERG_INTEGRATION=1 -e RUN_SERVING_INTEGRATION=1 -e RUN_SUPERSET_INTEGRATION=1 airflow-init pytest -p no:cacheprovider -q
+```
+
+The final Docker regression passed **89 tests in 88.94 seconds**, including existing MinIO/Iceberg
+and Airflow tests plus isolated PostgreSQL and real Superset API tests. Ruff passed across
+`src tests airflow scripts`; Compose, shell syntax, and DAG import checks passed. The local setup is
+not production hardened: example passwords must be changed beyond localhost, Superset currently uses
+in-memory rate limiting and lacks a Content Security Policy, and the dashboard API smoke proves
+data execution and saved layout but is not a browser visual-regression test.
 
 ## Production mapping (reference only)
 

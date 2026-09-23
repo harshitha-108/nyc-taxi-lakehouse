@@ -29,7 +29,7 @@ def _run_stage(stage: str, **context: object) -> dict[str, object]:
 
 with DAG(
     dag_id="nyc_taxi_monthly_lakehouse",
-    description="Monthly NYC Taxi ingestion, quality, analytics and optional Iceberg publication",
+    description="Monthly NYC Taxi ingestion, quality, analytics, Iceberg and serving publication",
     schedule="@monthly",
     start_date=datetime(2024, 1, 1, tzinfo=UTC),
     catchup=False,
@@ -41,7 +41,7 @@ with DAG(
     tasks = {}
     for stage in (
         "ingest_raw", "validate_schema", "bronze", "silver", "gold",
-        "geographic", "publish_iceberg", "validate_reconciliation",
+        "geographic", "publish_iceberg", "publish_serving", "validate_reconciliation",
     ):
         retries = 2 if stage == "ingest_raw" else 0 if stage == "validate_schema" else 1
         tasks[stage] = PythonOperator(
@@ -50,7 +50,8 @@ with DAG(
             op_kwargs={"stage": stage},
             retries=retries,
             retry_delay=timedelta(minutes=2),
-            trigger_rule=(TriggerRule.NONE_FAILED if stage == "validate_reconciliation"
+            trigger_rule=(TriggerRule.NONE_FAILED if stage in {
+                "publish_serving", "validate_reconciliation"}
                           else TriggerRule.ALL_SUCCESS),
         )
     for upstream, downstream in zip(tuple(tasks)[:-1], tuple(tasks)[1:], strict=True):
