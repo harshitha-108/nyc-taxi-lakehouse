@@ -1,0 +1,2 @@
+# Shell entrypoints run in Linux containers, including on Windows checkouts.
+*.sh text eol=lf

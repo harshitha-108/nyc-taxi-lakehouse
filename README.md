@@ -261,7 +261,7 @@ instead of Pandas so the same processing model can scale beyond this local month
 - [x] Phase 7 — Containerization improvements
 - [x] Phase 8 — Schema Evolution & Data Contracts
 - [x] Phase 9 — MinIO + Apache Iceberg lakehouse storage
-- [ ] Phase 10 — Data quality and observability
+- [x] Phase 10 — Airflow Production Orchestration
 - [ ] Phase 11 — Analytics database and dashboard
 - [ ] Phase 12 — Testing improvements
 - [ ] Phase 13 — CI/CD
@@ -573,6 +573,94 @@ The bucket initializer and monthly migration are idempotent. The Iceberg-mode in
 adopted the already migrated January period, then a second run skipped it without a download or
 transformation. The pinned community MinIO image is for loopback-only local development; review its
 archived upstream and security status before considering any non-local use.
+
+### Phase 10 — Airflow Production Orchestration
+
+Airflow 2.10.5 adds a local operational control plane for the existing processors. Its Python 3.11
+image includes the same Spark 3.5.3, Java 17, and Iceberg dependencies as the pipeline image.
+`LocalExecutor` uses a dedicated PostgreSQL 16 metadata database; this is separate from the local
+SQLite JDBC Iceberg catalog and MinIO's object storage. The scheduler and webserver run as a non-root
+user, with logs and PostgreSQL data in Docker volumes. The idempotent initializer migrates the metadata
+database, creates a development-only admin account, and makes an existing root-owned Phase 9 catalog
+file writable by Airflow before dropping privileges. The existing Phase 7 CLI/orchestrator remains
+available; Airflow does not use its period SUCCESS files to skip tasks or copy processing logic into
+the DAG.
+
+```mermaid
+flowchart TB
+    RUN["Monthly interval / deliberate manual run"] --> DAG["Airflow control plane"]
+    DAG --> ING["Ingest Raw"] --> GATE["Validate schema"] --> BR["Bronze"]
+    BR --> SI["Silver + quarantine"] --> GO["Gold marts"] --> GEO["Geographic enrichment"]
+    GEO --> PUB["Publish Iceberg if selected"] --> REC["Reconcile period"]
+    GATE -.->|Breaking| STOP["Failed run; downstream blocked"]
+    PUB -.->|Iceberg mode| STORE["Existing Iceberg tables / MinIO"]
+```
+
+The single `nyc_taxi_monthly_lakehouse` DAG runs on `@monthly` in UTC. Its interval **start** selects
+the source month: the February 2024 interval processes `2024-02`. A manual run can explicitly set
+`period` in its run configuration for replay. The DAG starts at 2024-01-01 but is created paused, with
+`catchup=False` and one active run at a time: starting Docker does not launch January–June or any
+other historical backlog. An operator may deliberately trigger one period or request a bounded
+backfill. The TLC publication lag is not inferred away: unpausing the current schedule before its
+source file exists can produce an ingestion failure, so operators should check source availability.
+
+The eight task IDs, in order, are `ingest_raw`, `validate_schema`, `bronze`, `silver`, `gold`,
+`geographic`, `publish_iceberg`, and `validate_reconciliation`. The DAG only defines dependency,
+parameters, retry policy, and logging; adapters in `src/nyc_taxi_lakehouse/orchestration/airflow_stages.py`
+call the existing processors. Ingestion gets two retries for transient network failures; the
+deterministic `BREAKING` schema gate gets none; later transform/storage tasks get one. `COMPATIBLE`
+continues, and `WARNING` continues with a warning log. A breaking contract fails `validate_schema`
+and leaves Bronze and all downstream tasks blocked. Filesystem mode skips optional publication using
+Airflow skip semantics while reconciliation still runs. Iceberg mode calls the existing publisher for
+all eight period-scoped tables; a retry replaces that month rather than appending duplicates. Each
+table commit is atomic, but the eight publications are not one cross-table transaction.
+
+Final reconciliation checks Bronze = valid Silver + quarantine, verifies all five Gold trip-count
+sums against valid Silver, and—when selected—checks the published Iceberg period. The geographic task
+returns matched/unmatched location counts and match percentage. XCom contains only small JSON-safe
+period, compatibility, count, and snapshot metadata; DataFrames and Parquet content stay in storage.
+
+After copying `.env.example` to the ignored `.env`, use the following from the repository root.
+Airflow's web UI is bound to [localhost:8080](http://localhost:8080). Filesystem-only use does not
+require MinIO; start `minio` and `minio-init` for Iceberg mode. The example credentials are strictly
+for local development.
+
+```powershell
+docker compose --profile airflow build pipeline airflow-init
+docker compose --profile airflow up -d airflow-postgres airflow-scheduler airflow-webserver
+docker compose --profile airflow ps
+docker compose --profile airflow run --rm --no-deps --user airflow airflow-init airflow dags list
+docker compose --profile airflow run --rm --no-deps --user airflow airflow-init airflow dags list-runs -d nyc_taxi_monthly_lakehouse
+docker compose up -d minio minio-init
+docker compose --profile airflow run --rm --no-deps --user airflow airflow-init airflow dags backfill nyc_taxi_monthly_lakehouse --start-date 2024-03-01 --end-date 2024-03-01 --dry-run
+docker compose --profile airflow stop airflow-scheduler airflow-webserver airflow-postgres
+```
+
+For a deliberate March replay, set `period` to `2024-03` and choose `taxi_type=yellow` and
+`storage_backend=filesystem` or `iceberg` in a manual DAG run; unpause the DAG only when ready for
+the scheduler to execute it. This reprocesses only the addressed month but executes all DAG stages.
+The Airflow 2.10.5 CLI accepts the following manual trigger (syntax verified with its CLI help; this
+real data-changing replay was **not** executed during Phase 10):
+
+```powershell
+$runConfig = '{"period":"2024-03","taxi_type":"yellow","storage_backend":"filesystem"}'
+docker compose --profile airflow run --rm --no-deps --user airflow airflow-init airflow dags unpause nyc_taxi_monthly_lakehouse
+docker compose --profile airflow run --rm --no-deps --user airflow airflow-init airflow dags trigger nyc_taxi_monthly_lakehouse --exec-date 2024-03-01 --conf $runConfig
+```
+
+Unpausing also enables the latest scheduled interval, so review source availability and pause the
+DAG again after the controlled replay if ongoing scheduling is not desired.
+The existing Phase 7 CLI remains the narrower option for a Silver-onward replay. A bounded Airflow
+backfill can use the same `backfill` command without `--dry-run` **only after** reviewing the source
+scope and expected overwrites. We validated March's dry-run, not a real historical Airflow backfill.
+
+Operational evidence: PostgreSQL, MinIO, scheduler, and webserver health checks passed; Airflow
+reported zero DAG import errors and listed the DAG as paused. Safe `dag.test()` runs with isolated
+stage stubs recorded task-level success, optional-publication skip, and a failed schema gate with
+Bronze `upstream_failed`. The final Docker suite passed **76 tests in 100.06 seconds**, including
+the Phase 9 MinIO/Iceberg integration tests; Ruff passed. An existing January Iceberg Bronze table
+remained readable after the Compose changes (20,332,093 total rows; 2,964,624 for January). No
+January–June business transformations were rerun merely to demonstrate Airflow.
 
 ## Production mapping (reference only)
 

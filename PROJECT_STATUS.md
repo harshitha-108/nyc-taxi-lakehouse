@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 9 — MinIO + Apache Iceberg Lakehouse Storage (PASS)
+Phase 10 — Airflow Production Orchestration (PASS)
 
 ## Completed
 
@@ -48,6 +48,10 @@ Phase 9 — MinIO + Apache Iceberg Lakehouse Storage (PASS)
 - SQLite JDBC Iceberg catalog, eight period-partitioned tables, migration/inspection/smoke CLIs
 - January–June historical migration with per-period quality and Gold reconciliations
 - Real MinIO/Iceberg snapshot, overwrite, time-travel, and breaking-schema-gate integration tests
+- Airflow monthly control-plane DAG with eight explicit stage tasks and stage-level adapters
+- LocalExecutor with a separate PostgreSQL metadata database, Docker health checks, and idempotent init
+- Paused-by-default schedule, manual period override, bounded backfill dry-run, and task-level retries
+- Isolated real Airflow DAG-run tests for success, optional skip, and breaking-schema blocking
 
 ## Current Architecture
 
@@ -60,8 +64,10 @@ The orchestrator also validates the Raw schema against the committed Yellow Taxi
 Bronze rebuild. Audit reports are runtime state, not business data. Historical successful Phase 7
 periods remain readable and skip processing. Phase 9 adds an optional Iceberg publication path: local
 transformation outputs remain in place, while Spark commits period-scoped Iceberg tables whose metadata
-and data live in MinIO. A local SQLite JDBC catalog stores table pointers. Airflow, dbt, Superset, and
-dashboards are not implemented.
+and data live in MinIO. A local SQLite JDBC catalog stores table pointers. Phase 10 adds an Airflow DAG
+that coordinates the same stage processors with separate task states, optional Iceberg publication,
+and final reconciliation. Airflow uses PostgreSQL for orchestration state and leaves the Phase 7 CLI
+state files intact; dbt, Superset, and dashboards are not implemented.
 
 ## Environment
 
@@ -77,10 +83,13 @@ dashboards are not implemented.
 - MinIO RELEASE.2025-09-07T16-13-09Z (Quay image; loopback-only local development)
 - Iceberg JDBC catalog: `lakehouse`, SQLite at `data/state/iceberg_catalog.db`
 - MinIO bucket `nyc-taxi-lakehouse`; warehouse `s3a://nyc-taxi-lakehouse/warehouse`
+- Airflow 2.10.5 on Python 3.11.16, LocalExecutor, PostgreSQL 16-alpine metadata database
+- DAG `nyc_taxi_monthly_lakehouse`; monthly UTC interval, paused on creation, `catchup=False`
+- Airflow web UI bound to `127.0.0.1:8080`; scheduler/webserver run as UID 50000
 
 ## How to Run
 
-Docker Desktop must be running. These commands were verified during Phase 1:
+Docker Desktop must be running. Commands below were verified across the completed phases:
 
 ```powershell
 Copy-Item .env.example .env
@@ -101,6 +110,12 @@ docker compose run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.storage.
 docker compose run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.storage.inspect
 docker compose run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.orchestration.pipeline --taxi-type yellow --start 2024-01 --end 2024-01 --mode incremental --storage-backend iceberg
 docker compose run --rm --no-deps -e RUN_ICEBERG_INTEGRATION=1 pipeline pytest
+docker compose --profile airflow build pipeline airflow-init
+docker compose --profile airflow up -d airflow-postgres airflow-scheduler airflow-webserver
+docker compose --profile airflow ps
+docker compose --profile airflow run --rm --no-deps --user airflow airflow-init airflow dags list
+docker compose --profile airflow run --rm --no-deps --user airflow airflow-init airflow dags backfill nyc_taxi_monthly_lakehouse --start-date 2024-03-01 --end-date 2024-03-01 --dry-run
+docker compose --profile airflow run --rm --no-deps --user airflow -e RUN_ICEBERG_INTEGRATION=1 airflow-init pytest -p no:cacheprovider -q
 ```
 
 ## Validation Completed
@@ -207,28 +222,46 @@ docker compose run --rm --no-deps -e RUN_ICEBERG_INTEGRATION=1 pipeline pytest
 - The first Iceberg-mode January incremental call adopted migrated outputs; the second recorded
   `processed=0 skipped=1` without a download or transformation. A real breaking source-schema test
   prevented any Bronze Iceberg table from being created in an isolated catalog.
+- Airflow metadata initialization and local admin-user creation succeeded against dedicated
+  PostgreSQL. Re-running initialization succeeded without duplicating the account. The initializer
+  adjusted only the existing root-owned, ignored Iceberg catalog file, then dropped privileges.
+- MinIO, PostgreSQL, Airflow scheduler, and Airflow webserver reported healthy. The DAG listed as
+  paused with eight tasks and zero import errors. Airflow 2.10.5 retained PySpark 3.5.3 and PyArrow
+  18.1.0 in its Python 3.11 image.
+- Real Airflow `dag.test()` runs with stubbed data-plane stages proved `success` task states, a
+  `publish_iceberg` skip with successful reconciliation in filesystem mode, and a failed
+  `validate_schema` task leaving Bronze `upstream_failed`. A compatible schema stub allowed Bronze
+  and Iceberg publication to succeed. These tests did not rewrite historical datasets.
+- The March 2024 Airflow backfill `--dry-run` rendered all eight tasks and made no data changes.
+  Period tests covered January, December, the year boundary, and an explicit March replay override.
+- After the Compose change, MinIO bucket initialization succeeded and a fresh Iceberg read returned
+  20,332,093 total Bronze rows and 2,964,624 January rows (six active files; eight snapshots).
 
 ## Tests
 
-- `pytest`: 61 tests passed in 75.05 seconds with `RUN_ICEBERG_INTEGRATION=1`, including all 52
-  Phase 8 baseline tests, raw-to-Bronze, Bronze-to-Silver, Silver-to-Gold, Taxi Zone
-  reference validation, and geographic-enrichment Spark
-  integration; Gold grain, metric, reconciliation, percentage, partition-level idempotency, and real
-  MinIO/Iceberg snapshot/time-travel tests.
-- `ruff check src tests`: passed.
+- `pytest`: 76 tests passed in 100.06 seconds as the non-root Airflow user with
+  `RUN_ICEBERG_INTEGRATION=1`, preserving the 61-test Phase 9 baseline and adding Airflow DAG,
+  period, schema-gate, storage-mode, and real DAG-run state tests.
+- `ruff check src tests airflow`: passed.
 - Spark environment smoke test: passed.
 
 ## Known Issues
 
 The README roadmap retains historical placeholder labels for Phases 6–7, and older overview/reference
-text still describes MinIO as planned; the strict README edit rule permitted only the Phase 9 checkbox
-and new subsection. The pinned community MinIO image is archived and should not be treated as a
+text still describes MinIO and Airflow as planned; strict README edit rules preserve those earlier
+sections while the Phase 9–10 implementation subsections describe the current system. The pinned
+community MinIO image is archived and should not be treated as a
 production security baseline. SQLite JDBC is a local single-writer catalog, and the eight tables do
 not share one cross-table transaction. A proposed real March Bronze overwrite was blocked by the
 safety review because an earlier project instruction reserved March replay for Silver onward; no
 March Bronze commit occurred. Real January double-load and an isolated two-month overwrite
 provide the Phase 9 idempotency proof instead. Spark's missing `ps`, native Hadoop library, and S3A
-metrics-config warnings did not affect execution.
+metrics-config warnings did not affect execution. Airflow CLI warns that optional Graphviz is absent,
+so graphical CLI rendering is unavailable; the UI and DAG parser work. The Airflow service setup is
+for local development, not a production security baseline. The monthly source may not yet be
+published when a current interval closes, so the paused DAG should only be enabled with awareness of
+TLC release timing. No real historical Airflow backfill or full Spark transformation was run in this
+phase; isolated Airflow execution and a March dry-run establish control-plane behavior.
 
 ## Architecture Decisions
 
@@ -283,7 +316,13 @@ metrics-config warnings did not affect execution.
   MinIO. This is a local single-writer compromise, not a production metastore recommendation.
 - Partition Iceberg by source taxi type/year/month and overwrite by an explicit source-period filter;
   preserve independent table snapshots and reject failed storage writes without silent fallback.
+- Keep Airflow as a control plane with explicit task dependencies; call reusable stage processors at
+  task runtime rather than nesting the entire Phase 7 orchestrator or importing Spark at DAG parse.
+- Use LocalExecutor with one active run and PostgreSQL metadata, avoiding Celery/Redis for local use.
+  Keep Airflow task state distinct from Phase 7 CLI state and the Iceberg SQLite catalog.
+- Return only small JSON-safe metadata through XCom; use existing partition replacement for data
+  idempotency, not Airflow retry state as a substitute.
 
 ## Next Phase
 
-Phase 10 — Airflow Orchestration. This phase has **not** started.
+Phase 11 — Analytics database and dashboard. This phase has **not** started.

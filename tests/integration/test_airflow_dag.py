@@ -1,0 +1,120 @@
+"""Real Airflow parsing, dependency, and isolated DAG-run behavior."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pendulum
+import pytest
+
+airflow = pytest.importorskip("airflow")
+
+from airflow.models import DagBag  # noqa: E402
+from airflow.utils.state import DagRunState, TaskInstanceState  # noqa: E402
+
+from nyc_taxi_lakehouse.orchestration import airflow_stages  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def dag():
+    folder = Path(__file__).resolve().parents[2] / "airflow" / "dags"
+    bag = DagBag(str(folder), include_examples=False)
+    assert not bag.import_errors
+    assert "nyc_taxi_monthly_lakehouse" in bag.dags
+    return bag.dags["nyc_taxi_monthly_lakehouse"]
+
+
+def test_dag_graph_schedule_and_retries(dag) -> None:
+    ordered = (
+        "ingest_raw", "validate_schema", "bronze", "silver", "gold", "geographic",
+        "publish_iceberg", "validate_reconciliation",
+    )
+    assert set(dag.task_ids) == set(ordered)
+    for before, after in zip(ordered[:-1], ordered[1:], strict=True):
+        assert after in dag.get_task(before).downstream_task_ids
+    assert dag.catchup is False
+    assert dag.start_date.isoformat().startswith("2024-01-01T00:00:00")
+    assert dag.max_active_runs == 1
+    assert dag.get_task("ingest_raw").retries == 2
+    assert dag.get_task("validate_schema").retries == 0
+    assert dag.get_task("bronze").retries == 1
+
+
+def test_monthly_timetable_supports_controlled_historical_interval(dag) -> None:
+    interval = dag.timetable.infer_manual_data_interval(
+        run_after=pendulum.datetime(2024, 4, 1, tz="UTC")
+    )
+    assert interval.start.isoformat().startswith("2024-03-01T00:00:00")
+    assert interval.end.isoformat().startswith("2024-04-01T00:00:00")
+
+
+def test_filesystem_dag_run_uses_real_airflow_states_without_processing(
+    dag, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = []
+
+    def fake_stage(stage, period, taxi_type, storage_backend, paths=None):
+        calls.append((stage, period.identifier, storage_backend))
+        return {"skipped": True} if stage == "publish_iceberg" else {"rows": 2}
+
+    monkeypatch.setattr(airflow_stages, "execute_stage", fake_stage)
+    run = dag.test(
+        execution_date=datetime.now(UTC) - timedelta(days=3),
+        run_conf={"period": "2024-03", "storage_backend": "filesystem"},
+    )
+    assert run.state == DagRunState.SUCCESS
+    states = {task.task_id: task.state for task in run.get_task_instances()}
+    assert states["publish_iceberg"] == TaskInstanceState.SKIPPED
+    assert states["validate_reconciliation"] == TaskInstanceState.SUCCESS
+    assert len(calls) == 8
+    assert all(period == "2024-03" and mode == "filesystem" for _, period, mode in calls)
+
+
+def test_breaking_schema_fails_airflow_gate_and_blocks_downstream(
+    dag, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = []
+
+    def fake_stage(stage, period, taxi_type, storage_backend, paths=None):
+        calls.append(stage)
+        if stage == "validate_schema":
+            raise airflow_stages.SchemaContractFailure("Breaking schema contract")
+        return {"rows": 2}
+
+    monkeypatch.setattr(airflow_stages, "execute_stage", fake_stage)
+    run = dag.test(
+        execution_date=datetime.now(UTC) - timedelta(days=2),
+        run_conf={"period": "2024-04", "storage_backend": "filesystem"},
+    )
+    assert run.state == DagRunState.FAILED
+    states = {task.task_id: task.state for task in run.get_task_instances()}
+    assert states["validate_schema"] == TaskInstanceState.FAILED
+    assert states["bronze"] == TaskInstanceState.UPSTREAM_FAILED
+    assert calls == ["ingest_raw", "validate_schema"]
+
+
+def test_compatible_schema_and_iceberg_publication_are_reachable(
+    dag, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = []
+
+    def fake_stage(stage, period, taxi_type, storage_backend, paths=None):
+        calls.append(stage)
+        if stage == "validate_schema":
+            return {"compatibility": "COMPATIBLE", "change_count": 1}
+        if stage == "publish_iceberg":
+            assert storage_backend == "iceberg"
+            return {"snapshots": {"bronze": 123}}
+        return {"rows": 2}
+
+    monkeypatch.setattr(airflow_stages, "execute_stage", fake_stage)
+    run = dag.test(
+        execution_date=datetime.now(UTC) - timedelta(days=1),
+        run_conf={"period": "2024-05", "storage_backend": "iceberg"},
+    )
+    assert run.state == DagRunState.SUCCESS
+    assert len(calls) == 8
+    states = {task.task_id: task.state for task in run.get_task_instances()}
+    assert states["bronze"] == TaskInstanceState.SUCCESS
+    assert states["publish_iceberg"] == TaskInstanceState.SUCCESS

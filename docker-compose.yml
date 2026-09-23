@@ -2,6 +2,7 @@ services:
   pipeline:
     build:
       context: .
+      target: pipeline
     env_file:
       - .env.example
       - .env
@@ -20,6 +21,11 @@ services:
       - "127.0.0.1:9001:9001"
     volumes:
       - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
   minio-init:
     image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on:
@@ -29,6 +35,84 @@ services:
       - .env
     entrypoint: /bin/sh
     command: -c 'i=0; until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do i=$$((i+1)); [ "$$i" -lt 30 ] || exit 1; sleep 2; done; mc mb --ignore-existing "local/$$MINIO_BUCKET"'
+  airflow-postgres:
+    image: postgres:16-alpine
+    profiles: ["airflow"]
+    env_file: [.env.example, .env]
+    volumes:
+      - airflow-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  airflow-init:
+    build:
+      context: .
+      target: airflow
+    image: nyc-taxi-lakehouse-airflow:2.10.5
+    profiles: ["airflow"]
+    user: "0:0"
+    env_file: [.env.example, .env]
+    environment: &airflow-environment
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      AIRFLOW__CORE__DAGS_FOLDER: /workspace/airflow/dags
+      AIRFLOW__CORE__PARALLELISM: "1"
+      AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "1"
+    working_dir: /workspace
+    volumes: &airflow-volumes
+      - .:/workspace
+      - airflow-logs:/opt/airflow/logs
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+    command: ["/usr/local/bin/airflow-init.sh"]
+  airflow-scheduler:
+    build:
+      context: .
+      target: airflow
+    image: nyc-taxi-lakehouse-airflow:2.10.5
+    profiles: ["airflow"]
+    env_file: [.env.example, .env]
+    environment: *airflow-environment
+    working_dir: /workspace
+    volumes: *airflow-volumes
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: ["airflow", "scheduler"]
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/bin/airflow-entrypoint.sh airflow jobs check --job-type SchedulerJob --hostname $$(hostname)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+  airflow-webserver:
+    build:
+      context: .
+      target: airflow
+    image: nyc-taxi-lakehouse-airflow:2.10.5
+    profiles: ["airflow"]
+    env_file: [.env.example, .env]
+    environment: *airflow-environment
+    working_dir: /workspace
+    volumes: *airflow-volumes
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: ["airflow", "webserver"]
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
 volumes:
   minio-data:
+  airflow-postgres-data:
+  airflow-logs:

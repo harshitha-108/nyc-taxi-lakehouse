@@ -29,3 +29,4 @@ metastore_db/
 volumes/
 minio-data/
 postgres-data/
+airflow/logs/
