@@ -265,7 +265,7 @@ instead of Pandas so the same processing model can scale beyond this local month
 - [x] Phase 11 — Analytics Serving Layer & Mobility Dashboard
 - [x] Phase 12 — Pipeline Reliability, Failure Recovery & Advanced Testing
 - [x] Phase 13 — CI/CD Quality Gates & Automated Validation
-- [ ] Phase 14 — Performance/scalability
+- [x] Phase 14 — Performance Engineering, Query Optimization & Benchmarking
 - [ ] Phase 15 — Final documentation/interview preparation
 
 ## Implementation Details
@@ -891,6 +891,87 @@ passed all four jobs on a fresh GitHub runner. Suitable future branch-protection
 actual job names: `Quality`, `Fast Tests`, `Integration Tests`, and `Docker Build`; branch
 protection has **not** been enabled here. The complete local Docker regression, including both
 heavy tests, passed 143 tests in 408.44 seconds; this is a separate local validation, not a PR job.
+
+### Phase 14 — Performance Engineering, Query Optimization & Benchmarking
+
+Phase 14 measured the existing local lakehouse before changing one production behavior: Gold no
+longer persists the entire valid Silver DataFrame. The five-mart architecture, Iceberg layout,
+PostgreSQL indexes, business rules, and historical January–June partitions remain unchanged.
+
+```mermaid
+flowchart LR
+    B["Measure baseline"] --> P["Inspect plans and data layout"]
+    P --> C["Change one behavior"]
+    C --> M["Measure again"]
+    M --> V["Verify values and recovery"]
+    V --> D{"Adopt?"}
+    D -->|Useful and safe| A["Adopt"]
+    D -->|Otherwise| R["Reject / retain current design"]
+```
+
+Benchmarks used the real Yellow Taxi January 2024 data in the existing local Docker environment
+(Python 3.11.16, Java 17, PySpark 3.5.3, Iceberg 1.10.1, PostgreSQL 16.15; Spark AQE enabled,
+four shuffle partitions, `local[*]`). Each paired experiment warmed both variants once, then
+alternated three measured runs in A/B, B/A, A/B order. The production-code Gold check used one
+untimed warm-up and three measured runs. Timings are wall-clock observations with warm/mixed JVM
+and filesystem caches, not controlled cold-start measurements or universal speedup estimates.
+Generated benchmark data and JSON results live under ignored `data/state/benchmarks/`.
+
+| Experiment | Baseline median | Candidate median | Decision |
+| --- | ---: | ---: | --- |
+| Full January Gold: persist Silver input → production no-persist | 59.916 s | 36.362 s | **ADOPTED** after value, downstream, and recovery checks |
+| January daily aggregate: shuffle partitions 4 → 2 | 1.444 s | 1.417 s | **REJECTED**: difference too small/noisy |
+| January daily aggregate: shuffle partitions 4 → 8 | 1.346 s | 1.356 s | **REJECTED**: no improvement |
+| January Silver Parquet write/read: `coalesce(1)` → `repartition(2)` | 27.119 s | 29.861 s | **REJECTED**: slower; two files were larger |
+| January Iceberg filter versus all-month scan | Different data scopes | 6 → 1 planned scan tasks | **NO CHANGE NEEDED**: period pruning already visible; no timing speedup claim |
+| 1,550-row PostgreSQL zone mart: candidate borough/trip index | 0.476 ms | 0.108 ms | **REJECTED**: only 0.368 ms absolute gain for another index |
+| Geographic Taxi Zone join | Existing broadcast join | No candidate change | **NO CHANGE NEEDED** |
+
+The Gold baseline's three persisted runs were 62.472, 59.916, and 58.972 seconds. The initial
+paired no-persist experiment had a 38.664-second median; the **modified production code** then
+ran in 37.296, 36.362, and 33.899 seconds (median 36.362; min 33.899; max 37.296). Comparing
+the persisted baseline with the final production median gives an observed **39.31% lower median**
+for this January workload and local environment. They were separate, similarly warmed Docker
+sessions, so this is directional evidence, not a statistical or cold-cache guarantee. Persistence
+was counterproductive for this workload; Spark caching is not generally slower. The optimized
+plans no longer show `InMemoryTableScan`, while `HashAggregate`, `Exchange` shuffles, and AQE
+remain. Parquet `ReadSchema` shows column pruning; the full-month Gold aggregates have no
+predicate to push down. Iceberg `BatchScan` filters reduced planned scan tasks from six to one
+for January. The Taxi Zone path uses `BroadcastHashJoin` with the small lookup on the build side.
+
+All four optimized Gold marts retained exact business-row digests, representing 2,927,000 valid
+January trips and 80,342,626.37 in TLC `total_amount`. The enriched geographic mart's business
+digest matched the existing output, with 100% reference-key matching. All five compact marts
+published and replayed in an isolated Iceberg catalog/namespace and a temporary PostgreSQL schema;
+each represented 2,927,000 trips. Focused failure/replay coverage passed 47 tests in 1,284.76
+seconds, and the complete local Docker suite passed **155 tests in 345.41 seconds** (versus 143
+before Phase 14); its post-documentation rerun passed 155 tests in 395.66 seconds. Read-only
+January–June reconciliation confirmed 20,332,093 Bronze rows =
+20,015,099 valid Silver + 316,994 quarantine; every local Gold, Iceberg, and PostgreSQL mart
+represented its corresponding valid Silver count. Historical Raw, Bronze, Silver, quarantine,
+and Gold path/size/mtime fingerprints remained unchanged. The [implementation CI run](https://github.com/harshitha-108/nyc-taxi-lakehouse/actions/runs/35905605539)
+passed Quality, Fast Tests, Docker Build, and Integration Tests on fresh hosted runners.
+
+To reproduce selected manual checks from the repository root, first start the documented local
+MinIO/PostgreSQL services and ensure January–June historical data exists. These commands write
+only ignored, isolated benchmark outputs; the history validator reads business data without
+rewriting it. Full-data benchmarks are intentionally excluded from GitHub CI.
+
+```powershell
+docker compose --profile airflow run --rm --no-deps pipeline python scripts/benchmark_phase14.py plans
+docker compose --profile airflow run --rm --no-deps pipeline python scripts/benchmark_phase14.py production_gold
+docker compose --profile airflow run --rm --no-deps pipeline python scripts/validate_phase14_downstream.py
+docker compose --profile airflow run --rm --no-deps pipeline python scripts/validate_phase14_history.py
+```
+
+The Silver repartition candidate produced two files totaling 81.78 MB versus one 65.40 MB file,
+without an established read benefit. The PostgreSQL candidate changed `Limit → Sort → Seq Scan`
+to `Limit → Index Scan`, but the 0.368 ms absolute gain on a small mart did not justify index
+maintenance. No shuffle, layout, geographic join, Iceberg, or PostgreSQL index change was kept.
+Historical stage durations are operational context, not a controlled before/after comparison:
+June ingestion 4.187 s, Bronze 24.178 s, Silver 81.457 s, Gold 58.575 s, and geographic
+enrichment 4.502 s. Local single-machine timings and compact serving marts do not establish
+performance at billion-row scale.
 
 ## Production mapping (reference only)
 

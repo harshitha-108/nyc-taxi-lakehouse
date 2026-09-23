@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-Phase 13 — CI/CD Quality Gates & Automated Validation (PASS)
+Phase 14 — Performance Engineering, Query Optimization & Benchmarking (PASS)
 
 ## Completed
 
@@ -67,6 +67,10 @@ Phase 13 — CI/CD Quality Gates & Automated Validation (PASS)
   jobs; push-to-main and pull-request triggers, branch/PR concurrency, and read-only permissions
 - Explicit pytest `integration`, `docker`, and `heavy` markers, plus a tracked-file hygiene guard
 - Fresh-run CI service configuration, MinIO/PostgreSQL health-gated integration, and failure diagnostics
+- Reproducible local January 2024 performance harness with Spark plan, shuffle, file-layout,
+  Iceberg scan, and PostgreSQL EXPLAIN experiments
+- One adopted production change: Gold no longer persists its full Silver input; isolated downstream,
+  read-only historical reconciliation, and reliability regression passed
 
 ## Current Architecture
 
@@ -89,6 +93,8 @@ transaction per source period. Superset queries serving tables only. dbt is not 
 GitHub Actions now checks the repository and image build on every main push and pull request. Its
 integration job starts fresh MinIO/PostgreSQL services without launching Airflow scheduler/webserver
 or Superset; no historical NYC data is used. There is no production deployment target or CD job.
+Phase 14 changes only the Gold processor's Silver-input caching behavior. The five marts, period
+layout, Iceberg publication path, serving schema, and Airflow control plane are unchanged.
 
 ## Environment
 
@@ -113,6 +119,9 @@ or Superset; no historical NYC data is used. There is no production deployment t
   `127.0.0.1:8088`, PostgreSQL-backed metadata, and local in-memory rate limiting
 - Hosted CI: Python 3.11, Temurin Java 17 for Spark tests, GitHub-hosted Ubuntu runner; Python
   dependencies come from `requirements.txt`, with pip caching keyed by that file in Fast Tests
+- Phase 14 local benchmark: January 2024 Yellow Taxi, Spark `local[*]` (12 logical cores in the
+  Docker environment), four shuffle partitions, AQE enabled; three warm/mixed measured runs per
+  variant after a warm-up. Timings are environment/workload-specific.
 
 ## How to Run
 
@@ -151,6 +160,10 @@ docker compose --profile airflow --profile dashboard up -d superset
 docker compose --profile airflow --profile dashboard run --rm --no-deps pipeline python scripts/bootstrap_dashboard.py
 docker compose --profile airflow --profile dashboard run --rm --no-deps pipeline python -m scripts.smoke_dashboard
 docker compose --profile airflow --profile dashboard run --rm --no-deps --user airflow -e RUN_ICEBERG_INTEGRATION=1 -e RUN_SERVING_INTEGRATION=1 -e RUN_SUPERSET_INTEGRATION=1 airflow-init pytest -p no:cacheprovider -q
+docker compose --profile airflow run --rm --no-deps pipeline python scripts/benchmark_phase14.py plans
+docker compose --profile airflow run --rm --no-deps pipeline python scripts/benchmark_phase14.py production_gold
+docker compose --profile airflow run --rm --no-deps pipeline python scripts/validate_phase14_downstream.py
+docker compose --profile airflow run --rm --no-deps pipeline python scripts/validate_phase14_history.py
 ```
 
 Phase 13 developer checks (use the running local MinIO/PostgreSQL services for service tests):
@@ -356,6 +369,36 @@ docker compose --profile airflow run --rm --no-deps --user airflow -e RUN_ICEBER
   dashboard-definition regression, including `dist_bar`; Integration Tests cover a real Airflow DAG,
   MinIO/Iceberg publication/recovery, PostgreSQL serving rollback, and five-mart atomicity.
 
+### Phase 14 performance and correctness validation
+
+- January Gold persisted baseline runs: 62.472/59.916/58.972 seconds (median 59.916). The
+  production no-persist runs: 37.296/36.362/33.899 seconds (median 36.362; min 33.899; max
+  37.296). The observed local median reduction is 39.31%; separate warmed Docker sessions make
+  this directional workload-specific evidence, not a general Spark caching claim.
+- All four compact Gold mart business-row digests matched the persisted baseline. Their January
+  aggregates represented 2,927,000 trips and TLC `total_amount` 80,342,626.37. After the change,
+  Gold plans have no `InMemoryTableScan`; `HashAggregate`, `Exchange`, and AQE remain. Parquet
+  `ReadSchema` demonstrates column pruning; full-month Gold scans have no predicate pushdown.
+- Shuffle 4→2 was rejected (1.444 vs 1.417 seconds, within noise); 4→8 was rejected (1.346 vs
+  1.356 seconds). Silver `repartition(2)` was rejected (29.861 vs 27.119 seconds for write/read;
+  two files totaling 81.78 MB vs one 65.40 MB file). The additional PostgreSQL index was rejected:
+  `EXPLAIN ANALYZE` improved 0.476→0.108 ms on the 1,550-row test table, only 0.368 ms absolute
+  while adding index maintenance. No rejected change was applied.
+- Iceberg January filtering was visible in `BatchScan`, reducing planned scan tasks from six to one;
+  the all-month and January timing scopes differ, so no speedup percentage is claimed. The Taxi Zone
+  lookup already uses a broadcast hash join. Both were classified **NO CHANGE NEEDED**.
+- Optimized Gold produced the same geographic business digest as historical January, with 100% zone
+  matching. All five Gold marts were published and replayed in an isolated Iceberg catalog/namespace
+  and a temporary PostgreSQL schema, with each representing 2,927,000 January trips. Focused tests
+  also verified unrelated-period retention, Iceberg snapshot recovery, and five-mart rollback.
+- Read-only January–June verification observed 20,332,093 Bronze = 20,015,099 valid Silver + 316,994
+  quarantine. Each monthly local Gold, Iceberg Gold, and PostgreSQL serving mart represented the
+  corresponding valid Silver trips; Iceberg table row counts matched local data. Historical Raw,
+  Bronze, Silver, quarantine, and Gold path/size/mtime fingerprints matched pre-Phase-14 values.
+- The [implementation CI run](https://github.com/harshitha-108/nyc-taxi-lakehouse/actions/runs/35905605539)
+  passed all four jobs on commit `41d0613`: Quality 11 seconds, Fast Tests 66 seconds, Docker Build
+  45 seconds, and Integration Tests 173 seconds. Full-data benchmarks remained local/manual.
+
 ## Tests
 
 - Focused Phase 12 reliability files: 75 passed in 39.11 seconds.
@@ -371,6 +414,12 @@ docker compose --profile airflow run --rm --no-deps --user airflow -e RUN_ICEBER
 - Hosted automatic CI: all four jobs passed on commit `84dde5a`.
 - Final complete local Docker regression after documentation: 143 passed in 408.44 seconds,
   including both heavy tests and the previous 130-test baseline.
+- Phase 14 focused reliability regression: 47 passed in 1,284.76 seconds, covering Gold promotion,
+  stage replay, reconciliation corruption, Iceberg recovery, serving rollback, and Airflow failures.
+- Phase 14 complete local Docker regression: 155 passed in 345.41 seconds, preserving and extending
+  the Phase 13 baseline of 143. A post-documentation rerun also passed 155 tests in 395.66 seconds.
+  Ruff, Compose, workflow YAML, Bash syntax, repository hygiene, and changed-line whitespace checks
+  passed.
 
 ## Known Issues
 
@@ -401,6 +450,13 @@ performance comparison was attempted.
 Phase 13 normal PR CI does not automate the two heavy tests, full Superset bootstrap/browser
 rendering, or the complete local full regression. These remain local/manual validations; the
 GitHub workflow does not deploy the application, publish an image, or enforce branch protection.
+Phase 14 timings are local warm/mixed observations, not cold-cache or statistical guarantees.
+The persisted baseline and final production no-persist runs used comparable January workloads
+but separate Docker sessions. Iceberg all-month versus January timings use different data scopes.
+PostgreSQL's index candidate was measured on a small mart; its maintenance cost was not benchmarked.
+No billion-row scalability or general Spark-cache conclusion is claimed. The lean local Docker
+images omit Git and the pipeline image omits PyYAML, so local hygiene ran with bundled host Python
+and Git while workflow YAML parsing ran in the Airflow image; hosted Quality also passed both.
 
 ## Architecture Decisions
 
@@ -477,9 +533,13 @@ GitHub workflow does not deploy the application, publish an image, or enforce br
   `.env`; never depend on a developer's secrets or historical data in hosted CI.
 - Guard tracked files against datasets, credentials, runtime databases, and logs; keep the two
   expensive tests as explicit local/full-regression coverage rather than hiding their exclusion.
+- Do not persist the full January Gold Silver input: three measured production runs were materially
+  faster without it and all business digests/reliability checks matched. Retain the existing four
+  shuffle partitions, Silver file layout, Iceberg period partitioning, broadcast Taxi Zone join,
+  and PostgreSQL indexes because measured evidence did not justify changing them.
 
 ## Next Phase
 
-Phase 14 — Performance/scalability measurement. It has **not** started. Establish reproducible
-baselines before changing partitioning, Spark execution, or data layout; report only measured
-improvements. The Phase 13 documentation-only CI run must pass before final push verification.
+Phase 15 — Final documentation and interview preparation. It has **not** started. Consolidate the
+completed system narrative and interview explanations without claiming unmeasured scale or cloud
+deployment. Do not begin Phase 15 until Phase 14 is reviewed.
