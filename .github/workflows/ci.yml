@@ -93,7 +93,7 @@ jobs:
       - name: Start required services and wait for health
         run: |
           docker compose --profile airflow up -d --wait --wait-timeout 180 minio airflow-postgres
-          docker compose run --rm minio-init
+          docker compose --profile airflow run --rm minio-init
           docker compose --profile airflow run --rm analytics-db-init
           docker compose --profile airflow run --rm --no-deps --user airflow airflow-init airflow db migrate
       - name: Run real-service tests without historical datasets
