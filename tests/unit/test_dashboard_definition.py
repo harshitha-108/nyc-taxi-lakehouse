@@ -15,6 +15,32 @@ def test_dashboard_charts_use_only_serving_marts() -> None:
     assert all(spec.viz_type for spec in specs)
 
 
+def test_bar_charts_use_superset_6_echarts_contract() -> None:
+    """The Superset 6 frontend registers ECharts bars, not legacy dist_bar."""
+    specs = {spec.name: spec for spec in chart_specs()}
+    expected_axes = {
+        "Hourly Pickup Demand": "pickup_hour",
+        "Pickup Trips by Borough": "borough",
+        "Top Pickup Zones": "zone",
+        "Payment Type Trips": "payment_type",
+    }
+    assert {spec.viz_type for spec in specs.values()} == {
+        "big_number_total", "echarts_timeseries_line", "echarts_timeseries_bar",
+    }
+    for name, axis in expected_axes.items():
+        spec = specs[name]
+        assert spec.viz_type == "echarts_timeseries_bar"
+        assert spec.params["x_axis"] == axis
+        assert spec.params["groupby"] == []
+        assert spec.params["metrics"][0]["column"]["column_name"] == "trip_count"
+        context = json.loads(query_context(7, spec.params))
+        assert context["queries"][0]["columns"] == [axis]
+    top_zones = specs["Top Pickup Zones"].params
+    assert top_zones["row_limit"] == 10
+    assert top_zones["order_desc"] is True
+    assert top_zones["orientation"] == "horizontal"
+
+
 def test_dashboard_layout_contains_all_charts_once() -> None:
     chart_ids = {spec.name: index for index, spec in enumerate(chart_specs(), start=1)}
     layout = json.loads(_layout(chart_ids))
