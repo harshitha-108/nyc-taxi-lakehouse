@@ -13,6 +13,16 @@ import requests
 LOGGER = logging.getLogger(__name__)
 TITLE = "NYC Urban Mobility Overview"
 DATABASE_NAME = "NYC Taxi Analytics"
+THEME_NAME = "THEME_DEFAULT"
+DAILY_DISPLAY_RANGE = "2024-01-01 : 2024-07-01"
+SERIES_COLORS = {
+    "Trips": "#1e4765",
+    "Total Amount": "#0e7c86",
+    "Hourly Trips": "#0e7c86",
+    "Borough Pickups": "#2e8062",
+    "Zone Pickups": "#1e4765",
+    "Payment Trips": "#5b6c82",
+}
 MART_NAMES = (
     "daily_trip_metrics", "hourly_demand", "pickup_location_performance",
     "payment_type_summary", "pickup_zone_performance",
@@ -20,6 +30,46 @@ MART_NAMES = (
 SUPPORTED_VIZ_TYPES = frozenset({
     "big_number_total", "echarts_timeseries_line", "echarts_timeseries_bar",
 })
+HEADER_MARKDOWN = (
+    "# NYC Urban Mobility\n"
+    "Yellow Taxi Performance & Demand Analytics\n\n"
+    "January–June 2024 | NYC Yellow Taxi Trips"
+)
+DASHBOARD_CSS = """
+.dashboard-content { background: #f5f7fb !important; }
+.dashboard-component-chart-holder:has(> h1) { padding: 8px 20px; }
+.dashboard-component-chart-holder > h1 {
+  margin: 0 0 4px; font-size: 30px; font-weight: 700; letter-spacing: -0.025em;
+  color: #14243a;
+}
+.dashboard-component-chart-holder > p { margin: 0 0 4px; color: #52657d; font-size: 14px; }
+.dashboard-component-chart-holder {
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+  box-shadow: 0 2px 10px rgba(20, 36, 58, 0.04);
+}
+.dashboard-component-chart-holder .header-title { color: #24364d; font-weight: 600; }
+.dashboard-component-chart-holder:has(.big_number_total) {
+  border-top: 4px solid var(--kpi-accent, #1e4765);
+  background: linear-gradient(180deg, var(--kpi-tint, #f3f7fa), #fff 45%);
+}
+.dashboard-component-chart-holder:has([data-test-chart-name="Total Valid Trips"]) {
+  --kpi-accent: #1e4765; --kpi-tint: #f2f6f9;
+}
+.dashboard-component-chart-holder:has([data-test-chart-name="Total Amount"]) {
+  --kpi-accent: #0e7c86; --kpi-tint: #edf8f8;
+}
+.dashboard-component-chart-holder:has([data-test-chart-name="Average Trip Distance"]) {
+  --kpi-accent: #2e8062; --kpi-tint: #f0f8f3;
+}
+.dashboard-component-chart-holder:has([data-test-chart-name="Average Trip Duration"]) {
+  --kpi-accent: #b0783d; --kpi-tint: #fcf6ed;
+}
+.dashboard-component-chart-holder .big_number_total .header-line {
+  color: var(--kpi-accent, #1e4765) !important;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+""".strip()
 
 
 def required(name: str) -> str:
@@ -55,37 +105,67 @@ def chart_specs() -> tuple[ChartSpec, ...]:
     no_time = {"time_range": "No filter", "row_limit": 1000}
     return (
         ChartSpec("Total Valid Trips", "daily_trip_metrics", "big_number_total",
-                  {**no_time, "metric": metric("trip_count", "Trips")}),
+                  {**no_time, "metric": metric("trip_count", "Trips"),
+                   "y_axis_format": ".3s"}),
         ChartSpec("Total Amount", "daily_trip_metrics", "big_number_total",
-                  {**no_time, "metric": metric("total_revenue", "Total Amount")}),
+                  {**no_time, "metric": metric("total_revenue", "Total Amount"),
+                   "y_axis_format": "$,.3s"}),
         ChartSpec("Average Trip Distance", "daily_trip_metrics", "big_number_total",
                   {**no_time, "metric": weighted_average(
-                      "average_trip_distance", "Average Distance")}),
+                      "average_trip_distance", "Average Distance"),
+                   "y_axis_format": ",.2f"}),
         ChartSpec("Average Trip Duration", "daily_trip_metrics", "big_number_total",
                   {**no_time, "metric": weighted_average(
-                      "average_trip_duration_minutes", "Average Minutes")}),
+                      "average_trip_duration_minutes", "Average Minutes"),
+                   "y_axis_format": ",.1f"}),
         ChartSpec("Daily Trips", "daily_trip_metrics", "echarts_timeseries_line",
-                  {**no_time, "x_axis": "pickup_date", "granularity_sqla": "pickup_date",
-                   "metrics": [metric("trip_count", "Trips")], "groupby": []}),
+                  {**no_time, "time_range": DAILY_DISPLAY_RANGE,
+                   "x_axis": "pickup_date", "granularity_sqla": "pickup_date",
+                   "metrics": [metric("trip_count", "Trips")], "groupby": [],
+                   "x_axis_title": "Pickup Date", "y_axis_title": "Trips",
+                   "x_axis_title_margin": 35, "y_axis_title_margin": 50,
+                   "y_axis_format": ".3s", "tooltip_time_format": "%b %d, %Y",
+                   "rich_tooltip": True, "show_legend": False}),
         ChartSpec("Daily Total Amount", "daily_trip_metrics", "echarts_timeseries_line",
-                  {**no_time, "x_axis": "pickup_date", "granularity_sqla": "pickup_date",
-                   "metrics": [metric("total_revenue", "Total Amount")], "groupby": []}),
+                  {**no_time, "time_range": DAILY_DISPLAY_RANGE,
+                   "x_axis": "pickup_date", "granularity_sqla": "pickup_date",
+                   "metrics": [metric("total_revenue", "Total Amount")], "groupby": [],
+                   "x_axis_title": "Pickup Date", "y_axis_title": "Total Amount ($)",
+                   "x_axis_title_margin": 35, "y_axis_title_margin": 62,
+                   "y_axis_format": "$,.3s", "tooltip_time_format": "%b %d, %Y",
+                   "rich_tooltip": True, "show_legend": False}),
         ChartSpec("Hourly Pickup Demand", "hourly_demand", "echarts_timeseries_bar",
                   {**no_time, "x_axis": "pickup_hour", "x_axis_force_categorical": True,
-                   "groupby": [], "metrics": [metric("trip_count", "Trips")]}),
+                   "groupby": [], "metrics": [metric("trip_count", "Hourly Trips")],
+                   "x_axis_title": "Pickup Hour (0–23)", "y_axis_title": "Trips",
+                   "x_axis_title_margin": 35, "y_axis_title_margin": 50,
+                   "y_axis_format": ".3s", "rich_tooltip": True,
+                   "show_legend": False}),
         ChartSpec("Pickup Trips by Borough", "pickup_zone_performance",
                   "echarts_timeseries_bar",
                   {**no_time, "x_axis": "borough", "groupby": [],
-                   "metrics": [metric("trip_count", "Trips")]}),
+                   "orientation": "horizontal", "show_legend": False,
+                   "x_axis_sort": "Borough Pickups", "x_axis_sort_asc": True,
+                   "y_axis_title": "Trips", "y_axis_title_margin": 35,
+                   "y_axis_format": ".3s", "rich_tooltip": True,
+                   "metrics": [metric("trip_count", "Borough Pickups")]}),
         ChartSpec("Top Pickup Zones", "pickup_zone_performance",
                   "echarts_timeseries_bar",
                   {**no_time, "x_axis": "zone", "groupby": [], "row_limit": 10,
                    "order_desc": True, "orientation": "horizontal",
-                   "metrics": [metric("trip_count", "Trips")]}),
+                   "x_axis_sort": "Zone Pickups", "x_axis_sort_asc": True,
+                   "y_axis_title": "Trips", "y_axis_title_margin": 35,
+                   "y_axis_format": ".3s", "rich_tooltip": True,
+                   "metrics": [metric("trip_count", "Zone Pickups")],
+                   "show_legend": False}),
         ChartSpec("Payment Type Trips", "payment_type_summary",
                   "echarts_timeseries_bar",
                   {**no_time, "x_axis": "payment_type", "x_axis_force_categorical": True,
-                   "groupby": [], "metrics": [metric("trip_count", "Trips")]}),
+                   "groupby": [], "metrics": [metric("trip_count", "Payment Trips")],
+                   "x_axis_title": "Payment Type Code", "y_axis_title": "Trips",
+                   "x_axis_title_margin": 35, "y_axis_title_margin": 50,
+                   "y_axis_format": ".3s", "rich_tooltip": True,
+                   "show_legend": False}),
     )
 
 
@@ -109,7 +189,8 @@ def query_context(dataset_id: int, params: dict[str, object]) -> str:
         "datasource": {"id": dataset_id, "type": "table"},
         "force": False,
         "queries": [{"columns": columns, "metrics": metrics, "filters": [],
-                     "time_range": "No filter", "row_limit": params.get("row_limit", 1000),
+                     "time_range": params.get("time_range", "No filter"),
+                     "row_limit": params.get("row_limit", 1000),
                      "order_desc": params.get("order_desc", False)}],
         "form_data": params, "result_format": "json", "result_type": "full",
     })
@@ -147,7 +228,7 @@ class SupersetClient:
 
 
 def _layout(chart_ids: dict[str, int]) -> str:
-    """Use Superset's documented position_json tree, with four KPI cards first."""
+    """Put a compact introduction above KPIs and three balanced analytical rows."""
     positions: dict[str, object] = {
         "DASHBOARD_VERSION_KEY": "v2",
         "ROOT_ID": {"id": "ROOT_ID", "type": "ROOT", "children": ["GRID_ID"]},
@@ -156,21 +237,51 @@ def _layout(chart_ids: dict[str, int]) -> str:
         "HEADER_ID": {"id": "HEADER_ID", "type": "HEADER", "meta": {"text": TITLE}},
     }
     names = list(chart_ids)
-    rows = (names[:4], names[4:6], names[6:8], names[8:10])
+    rows = (
+        ("MARKDOWN-INTRO",),
+        tuple(names[:4]),
+        ("Daily Trips", "Pickup Trips by Borough"),
+        ("Hourly Pickup Demand", "Top Pickup Zones"),
+        ("Daily Total Amount", "Payment Type Trips"),
+    )
     for index, row in enumerate(rows, start=1):
         row_id = f"ROW-{index}"
-        children = [f"CHART-{chart_ids[name]}" for name in row]
+        children = ["MARKDOWN-INTRO" if name == "MARKDOWN-INTRO"
+                    else f"CHART-{chart_ids[name]}" for name in row]
         positions["GRID_ID"]["children"].append(row_id)
         positions[row_id] = {"id": row_id, "type": "ROW", "children": children,
                              "parents": ["ROOT_ID", "GRID_ID"],
                              "meta": {"background": "BACKGROUND_TRANSPARENT"}}
+        if index == 1:
+            positions["MARKDOWN-INTRO"] = {
+                "id": "MARKDOWN-INTRO", "type": "MARKDOWN", "children": [],
+                "parents": ["ROOT_ID", "GRID_ID", row_id],
+                "meta": {"code": HEADER_MARKDOWN, "width": 12, "height": 18},
+            }
+            continue
         for name in row:
             chart_id = chart_ids[name]
+            if index == 2:
+                width = 3
+            elif index == 4:
+                width = 7 if name == row[0] else 5
+            else:
+                width = 8 if name == row[0] else 4
+            label = {
+                "Total Valid Trips": "Total Trips",
+                "Average Trip Distance": "Avg Trip Distance (mi)",
+                "Average Trip Duration": "Avg Trip Duration (min)",
+                "Daily Trips": "Daily Trip Trend",
+                "Pickup Trips by Borough": "Trips by Borough",
+                "Top Pickup Zones": "Top 10 Pickup Zones",
+                "Payment Type Trips": "Trips by Payment Type",
+            }.get(name, name)
             positions[f"CHART-{chart_id}"] = {
                 "id": f"CHART-{chart_id}", "type": "CHART", "children": [],
                 "parents": ["ROOT_ID", "GRID_ID", row_id],
                 "meta": {"chartId": chart_id, "sliceName": name,
-                         "width": 3 if index == 1 else 6, "height": 40},
+                         "sliceNameOverride": label,
+                         "width": width, "height": 24 if index == 2 else 48},
             }
     return json.dumps(positions)
 
@@ -199,6 +310,9 @@ def bootstrap(client: SupersetClient) -> dict[str, object]:
     """Create or update exactly one dashboard and its serving-only assets."""
     specs = chart_specs()
     validate_chart_specs(specs)
+    themes = {item["theme_name"]: item["id"] for item in client.listed("theme")}
+    if THEME_NAME not in themes:
+        raise RuntimeError(f"Superset theme not available: {THEME_NAME}")
     existing_databases = {item["database_name"]: item["id"]
                           for item in client.listed("database")}
     database_id = existing_databases.get(DATABASE_NAME)
@@ -244,10 +358,12 @@ def bootstrap(client: SupersetClient) -> dict[str, object]:
     LOGGER.info("Superset charts ready: count=%s", len(chart_ids))
 
     metadata = {"native_filter_configuration": _filters(dataset_ids, chart_ids),
+                "label_colors": SERIES_COLORS,
                 "filter_bar_orientation": "HORIZONTAL", "refresh_frequency": 0}
     dashboard_body = {"dashboard_title": TITLE, "published": True,
                       "slug": "nyc-urban-mobility-overview",
-                      "position_json": _layout(chart_ids), "json_metadata": json.dumps(metadata)}
+                      "position_json": _layout(chart_ids), "json_metadata": json.dumps(metadata),
+                      "css": DASHBOARD_CSS, "theme_id": themes[THEME_NAME]}
     existing_dashboards = {item["dashboard_title"]: item["id"]
                            for item in client.listed("dashboard")}
     dashboard_id = existing_dashboards.get(TITLE)

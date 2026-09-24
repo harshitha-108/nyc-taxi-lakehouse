@@ -5,10 +5,15 @@ from dataclasses import replace
 
 import pytest
 from scripts.bootstrap_dashboard import (
+    DAILY_DISPLAY_RANGE,
+    DASHBOARD_CSS,
+    HEADER_MARKDOWN,
     MART_NAMES,
+    SERIES_COLORS,
     TITLE,
     _filters,
     _layout,
+    bootstrap,
     chart_specs,
     query_context,
     validate_chart_specs,
@@ -51,6 +56,12 @@ def test_bar_charts_use_superset_6_echarts_contract() -> None:
     assert top_zones["row_limit"] == 10
     assert top_zones["order_desc"] is True
     assert top_zones["orientation"] == "horizontal"
+    for name in ("Pickup Trips by Borough", "Top Pickup Zones"):
+        params = specs[name].params
+        assert params["x_axis_sort"] == params["metrics"][0]["label"]
+        # ECharts reverses the categorical Y axis for horizontal bars:
+        # ascending data order displays the largest bar at the top.
+        assert params["x_axis_sort_asc"] is True
 
 
 def test_dashboard_layout_contains_all_charts_once() -> None:
@@ -59,6 +70,110 @@ def test_dashboard_layout_contains_all_charts_once() -> None:
     assert layout["ROOT_ID"]["children"] == ["GRID_ID"]
     chart_nodes = {name for name in layout if name.startswith("CHART-")}
     assert chart_nodes == {f"CHART-{number}" for number in chart_ids.values()}
+    assert len(layout["GRID_ID"]["children"]) == 5
+    assert layout["ROW-1"]["children"] == ["MARKDOWN-INTRO"]
+    assert layout["MARKDOWN-INTRO"]["meta"]["code"] == HEADER_MARKDOWN
+    assert "NYC Urban Mobility" in HEADER_MARKDOWN
+    assert [layout[node]["meta"]["width"] for node in layout["ROW-2"]["children"]] == [3] * 4
+    for row_id in ("ROW-3", "ROW-5"):
+        assert [layout[node]["meta"]["width"] for node in layout[row_id]["children"]] == [8, 4]
+    assert [layout[node]["meta"]["width"] for node in layout["ROW-4"]["children"]] == [7, 5]
+    assert layout[f"CHART-{chart_ids['Daily Trips']}"]["meta"][
+        "sliceNameOverride"] == "Daily Trip Trend"
+
+
+def test_presentation_changes_preserve_metrics_and_safe_css() -> None:
+    specs = {spec.name: spec for spec in chart_specs()}
+    for name in ("Total Valid Trips", "Total Amount", "Average Trip Distance",
+                 "Average Trip Duration"):
+        assert specs[name].params["y_axis_format"]
+    assert "dashboard-component-chart-holder" in DASHBOARD_CSS
+    assert "#CHART-" not in DASHBOARD_CSS
+    assert "display: none" not in DASHBOARD_CSS
+    assert "--kpi-accent" in DASHBOARD_CSS
+    assert "linear-gradient" in DASHBOARD_CSS
+    assert "↑" not in DASHBOARD_CSS and "↓" not in DASHBOARD_CSS
+    for name in ("Daily Trips", "Daily Total Amount"):
+        spec = specs[name]
+        assert spec.params["time_range"] == DAILY_DISPLAY_RANGE
+        assert json.loads(query_context(7, spec.params))["queries"][0][
+            "time_range"] == DAILY_DISPLAY_RANGE
+    assert specs["Average Trip Distance"].params["metric"]["sqlExpression"] == (
+        "SUM(average_trip_distance * trip_count) / NULLIF(SUM(trip_count), 0)"
+    )
+    assert specs["Average Trip Duration"].params["metric"]["sqlExpression"] == (
+        "SUM(average_trip_duration_minutes * trip_count) / NULLIF(SUM(trip_count), 0)"
+    )
+
+
+def test_all_analytical_charts_have_units_tooltips_and_stable_colors() -> None:
+    specs = {spec.name: spec for spec in chart_specs()}
+    axes = {
+        "Daily Trips": ("Pickup Date", "Trips"),
+        "Daily Total Amount": ("Pickup Date", "Total Amount ($)"),
+        "Hourly Pickup Demand": ("Pickup Hour (0–23)", "Trips"),
+        "Pickup Trips by Borough": (None, "Trips"),
+        "Top Pickup Zones": (None, "Trips"),
+        "Payment Type Trips": ("Payment Type Code", "Trips"),
+    }
+    for name, (category, measure) in axes.items():
+        params = specs[name].params
+        assert (params.get("x_axis_title"), params["y_axis_title"]) == (category, measure)
+        assert params["y_axis_title_margin"] > 0
+        if category is not None:
+            assert params["x_axis_title_margin"] > 0
+        assert params["y_axis_format"] == ("$,.3s" if name == "Daily Total Amount"
+                                            else ".3s")
+        assert params["rich_tooltip"] is True
+        assert params["metrics"][0]["label"] in SERIES_COLORS
+    assert len(set(SERIES_COLORS.values())) > 2
+    assert "2024-01-01 : 2024-07-01" == DAILY_DISPLAY_RANGE
+
+
+def test_bootstrap_reuses_dashboard_assets_and_persists_styling(monkeypatch) -> None:
+    for name in ("ANALYTICS_DB_USER", "ANALYTICS_DB_PASSWORD", "ANALYTICS_DB_HOST",
+                 "ANALYTICS_DB_PORT", "ANALYTICS_DB_NAME"):
+        monkeypatch.setenv(name, "test-only")
+
+    class MemoryClient:
+        def __init__(self) -> None:
+            self.items = {"database": [], "dataset": [], "chart": [], "dashboard": []}
+            self.dashboard_body = {}
+
+        def listed(self, resource):
+            if resource == "theme":
+                return [{"id": 1, "theme_name": "THEME_DEFAULT"}]
+            return self.items[resource]
+
+        def request(self, method, path, payload=None):
+            parts = path.strip("/").split("/")
+            resource = parts[2]
+            if resource == "dashboard":
+                self.dashboard_body = payload
+            if method == "POST":
+                new_id = len(self.items[resource]) + 1
+                item = {"id": new_id, **payload}
+                if resource == "dataset":
+                    item["database"] = {"id": payload["database"]}
+                self.items[resource].append(item)
+                return {"id": new_id}
+            if resource == "dashboard" and method == "PUT":
+                self.items[resource][int(parts[3]) - 1].update(payload)
+            return {}
+
+    client = MemoryClient()
+    first = bootstrap(client)
+    second = bootstrap(client)
+    assert first == second
+    assert {name: len(items) for name, items in client.items.items()} == {
+        "database": 1, "dataset": 5, "chart": 10, "dashboard": 1,
+    }
+    assert client.dashboard_body["css"] == DASHBOARD_CSS
+    assert client.dashboard_body["theme_id"] == 1
+    metadata = json.loads(client.dashboard_body["json_metadata"])
+    assert metadata["label_colors"] == SERIES_COLORS
+    filters = metadata["native_filter_configuration"]
+    assert [item["name"] for item in filters] == ["Source Month", "Pickup Borough"]
 
 
 def test_borough_filter_excludes_non_geographic_charts() -> None:

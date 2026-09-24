@@ -64,7 +64,7 @@ Operational checks cover download interruption, breaking schema, local partition
 
 ## Analytics and dashboard
 
-Gold Parquet is the source for the five PostgreSQL serving marts; Superset queries PostgreSQL, not trip-level Raw or Silver. The `NYC Urban Mobility Overview` dashboard has ten saved charts across trips, trip charges, distance/duration, pickup demand, geography, and payment mix. Its REST bootstrap is idempotent. All ten chart-data calls returned data, and a signed-in local browser check showed all ten charts; “Top Pickup Zones” displayed a row-limit warning. Example analytical queries are in [serving_examples.sql](sql/serving_examples.sql). There is no claim of real-time analytics.
+Gold Parquet is the source for the five PostgreSQL serving marts; Superset queries PostgreSQL, not trip-level Raw or Silver. The `NYC Urban Mobility Overview` dashboard has ten saved charts: four KPIs followed by paired daily demand/borough, hourly demand/top-zone, and daily amount/payment views. Its native month and scoped borough filters, light theme, layout, and styling are reproducible through an idempotent REST bootstrap. The two daily trends display pickup dates in January–June 2024 so source-date outliers do not flatten the time axis; this display window does not alter the stored marts or KPI totals. All ten chart-data calls returned data, and a signed-in local browser check showed all ten charts; “Top Pickup Zones” displayed a non-fatal row-limit warning. Example analytical queries are in [serving_examples.sql](sql/serving_examples.sql). There is no claim of real-time analytics.
 
 ## Performance engineering
 
