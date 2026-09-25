@@ -89,7 +89,7 @@ jobs:
       - name: Create isolated CI configuration
         run: bash scripts/ci-env.sh
       - name: Build pipeline and Airflow test images
-        run: docker compose --profile airflow build pipeline airflow-init
+        run: docker compose --profile airflow build pipeline airflow-init minio-init
       - name: Start required services and wait for health
         run: |
           docker compose --profile airflow up -d --wait --wait-timeout 180 minio airflow-postgres

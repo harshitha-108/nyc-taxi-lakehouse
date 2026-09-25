@@ -11,7 +11,11 @@ services:
       - .:/workspace
     command: python --version
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # The official community images are no longer publicly pullable. This
+    # source-built community image is pinned to an immutable multi-arch digest.
+    image: alpine/minio:RELEASE.2025-10-15T17-29-55Z@sha256:cf23643a6cf9ce159c57643ceb88279e431262282428c9e0bf3a7ef1a97e84b4
+    # Preserve access to volumes created by the prior root-running image.
+    user: "0:0"
     env_file:
       - .env.example
       - .env
@@ -22,19 +26,21 @@ services:
     volumes:
       - minio-data:/data
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9000/minio/health/live"]
       interval: 10s
       timeout: 5s
       retries: 6
   minio-init:
-    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    build:
+      context: .
+      target: pipeline
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
     env_file:
       - .env.example
       - .env
-    entrypoint: /bin/sh
-    command: -c 'i=0; until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do i=$$((i+1)); [ "$$i" -lt 30 ] || exit 1; sleep 2; done; mc mb --ignore-existing "local/$$MINIO_BUCKET"'
+    command: ["python", "scripts/init_minio_bucket.py"]
   airflow-postgres:
     image: postgres:16-alpine
     profiles: ["airflow", "dashboard"]
