@@ -9,6 +9,7 @@ from scripts.bootstrap_dashboard import (
     DASHBOARD_CSS,
     HEADER_MARKDOWN,
     MART_NAMES,
+    PAYMENT_TYPE_LABEL_SQL,
     SERIES_COLORS,
     TITLE,
     _filters,
@@ -39,7 +40,6 @@ def test_bar_charts_use_superset_6_echarts_contract() -> None:
         "Hourly Pickup Demand": "pickup_hour",
         "Pickup Trips by Borough": "borough",
         "Top Pickup Zones": "zone",
-        "Payment Type Trips": "payment_type",
     }
     assert {spec.viz_type for spec in specs.values()} == {
         "big_number_total", "echarts_timeseries_line", "echarts_timeseries_bar",
@@ -52,6 +52,14 @@ def test_bar_charts_use_superset_6_echarts_contract() -> None:
         assert spec.params["metrics"][0]["column"]["column_name"] == "trip_count"
         context = json.loads(query_context(7, spec.params))
         assert context["queries"][0]["columns"] == [axis]
+    payment = specs["Payment Type Trips"]
+    assert payment.viz_type == "echarts_timeseries_bar"
+    assert payment.params["x_axis"] == {
+        "expressionType": "SQL", "columnType": "BASE_AXIS",
+        "sqlExpression": PAYMENT_TYPE_LABEL_SQL, "label": "Payment method",
+    }
+    assert json.loads(query_context(7, payment.params))["queries"][0][
+        "columns"] == [payment.params["x_axis"]]
     top_zones = specs["Top Pickup Zones"].params
     assert top_zones["row_limit"] == 10
     assert top_zones["order_desc"] is True
@@ -114,7 +122,7 @@ def test_all_analytical_charts_have_units_tooltips_and_stable_colors() -> None:
         "Hourly Pickup Demand": ("Pickup Hour (0–23)", "Trips"),
         "Pickup Trips by Borough": (None, "Trips"),
         "Top Pickup Zones": (None, "Trips"),
-        "Payment Type Trips": ("Payment Type Code", "Trips"),
+        "Payment Type Trips": ("Payment method", "Trips"),
     }
     for name, (category, measure) in axes.items():
         params = specs[name].params
@@ -128,6 +136,17 @@ def test_all_analytical_charts_have_units_tooltips_and_stable_colors() -> None:
         assert params["metrics"][0]["label"] in SERIES_COLORS
     assert len(set(SERIES_COLORS.values())) > 2
     assert "2024-01-01 : 2024-07-01" == DAILY_DISPLAY_RANGE
+
+
+def test_payment_labels_follow_official_tlc_dictionary_and_keep_unknown_codes() -> None:
+    labels = {
+        0: "Flex Fare trip", 1: "Credit card", 2: "Cash", 3: "No charge",
+        4: "Dispute", 5: "Unknown", 6: "Voided trip",
+    }
+    for code, label in labels.items():
+        assert f"WHEN {code} THEN '{label}'" in PAYMENT_TYPE_LABEL_SQL
+    assert "ELSE 'Code ' || CAST(payment_type AS TEXT)" in PAYMENT_TYPE_LABEL_SQL
+    assert chart_specs()[-1].params["x_axis_label_rotation"] == 35
 
 
 def test_bootstrap_reuses_dashboard_assets_and_persists_styling(monkeypatch) -> None:
@@ -203,7 +222,11 @@ def test_dashboard_definition_references_existing_serving_fields() -> None:
     for spec in specs:
         fields = names_by_mart[spec.mart]
         if "x_axis" in spec.params:
-            assert spec.params["x_axis"] in fields
+            if spec.name == "Payment Type Trips":
+                assert "payment_type" in fields
+                assert spec.params["x_axis"]["sqlExpression"] == PAYMENT_TYPE_LABEL_SQL
+            else:
+                assert spec.params["x_axis"] in fields
         for value in spec.params.get("metrics", []):
             assert value["column"]["column_name"] in fields
     chart_ids = {spec.name: number for number, spec in enumerate(specs, start=1)}

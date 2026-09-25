@@ -15,6 +15,19 @@ TITLE = "NYC Urban Mobility Overview"
 DATABASE_NAME = "NYC Taxi Analytics"
 THEME_NAME = "THEME_DEFAULT"
 DAILY_DISPLAY_RANGE = "2024-01-01 : 2024-07-01"
+# Official TLC Yellow Taxi data dictionary: payment_type codes 0–6.
+# Keep the translation in this chart, not in the serving mart.
+PAYMENT_TYPE_LABEL_SQL = (
+    "CASE payment_type "
+    "WHEN 0 THEN 'Flex Fare trip' "
+    "WHEN 1 THEN 'Credit card' "
+    "WHEN 2 THEN 'Cash' "
+    "WHEN 3 THEN 'No charge' "
+    "WHEN 4 THEN 'Dispute' "
+    "WHEN 5 THEN 'Unknown' "
+    "WHEN 6 THEN 'Voided trip' "
+    "ELSE 'Code ' || CAST(payment_type AS TEXT) END"
+)
 SERIES_COLORS = {
     "Trips": "#1e4765",
     "Total Amount": "#0e7c86",
@@ -37,7 +50,11 @@ HEADER_MARKDOWN = (
 )
 DASHBOARD_CSS = """
 .dashboard-content { background: #f5f7fb !important; }
-.dashboard-component-chart-holder:has(> h1) { padding: 8px 20px; }
+.dashboard-component-chart-holder:has(> h1) {
+  padding: 8px 20px;
+  border-top: 4px solid #1e4765;
+  background: linear-gradient(180deg, #f2f6f9, #fff 70%);
+}
 .dashboard-component-chart-holder > h1 {
   margin: 0 0 4px; font-size: 30px; font-weight: 700; letter-spacing: -0.025em;
   color: #14243a;
@@ -48,6 +65,25 @@ DASHBOARD_CSS = """
   box-shadow: 0 2px 10px rgba(20, 36, 58, 0.04);
 }
 .dashboard-component-chart-holder .header-title { color: #24364d; font-weight: 600; }
+.dashboard-component-chart-holder:has(.chart-slice):not(:has(.big_number_total)) {
+  border-top: 4px solid var(--chart-accent, #1e4765);
+  background: linear-gradient(180deg, var(--chart-tint, #f2f6f9), #fff 24%);
+}
+.dashboard-component-chart-holder:has([data-test-chart-name="Daily Total Amount"]) {
+  --chart-accent: #0e7c86; --chart-tint: #edf8f8;
+}
+.dashboard-component-chart-holder:has([data-test-chart-name="Pickup Trips by Borough"]) {
+  --chart-accent: #2e8062; --chart-tint: #f0f8f3;
+}
+.dashboard-component-chart-holder:has([data-test-chart-name="Hourly Pickup Demand"]) {
+  --chart-accent: #0e7c86; --chart-tint: #edf8f8;
+}
+.dashboard-component-chart-holder:has([data-test-chart-name="Top Pickup Zones"]) {
+  --chart-accent: #2e8062; --chart-tint: #f0f8f3;
+}
+.dashboard-component-chart-holder:has([data-test-chart-name="Payment Type Trips"]) {
+  --chart-accent: #5b6c82; --chart-tint: #f3f5f8;
+}
 .dashboard-component-chart-holder:has(.big_number_total) {
   border-top: 4px solid var(--kpi-accent, #1e4765);
   background: linear-gradient(180deg, var(--kpi-tint, #f3f7fa), #fff 45%);
@@ -160,10 +196,14 @@ def chart_specs() -> tuple[ChartSpec, ...]:
                    "show_legend": False}),
         ChartSpec("Payment Type Trips", "payment_type_summary",
                   "echarts_timeseries_bar",
-                  {**no_time, "x_axis": "payment_type", "x_axis_force_categorical": True,
+                  {**no_time, "x_axis": {"expressionType": "SQL",
+                                           "columnType": "BASE_AXIS",
+                                           "sqlExpression": PAYMENT_TYPE_LABEL_SQL,
+                                           "label": "Payment method"},
+                   "x_axis_force_categorical": True, "x_axis_label_rotation": 35,
                    "groupby": [], "metrics": [metric("trip_count", "Payment Trips")],
-                   "x_axis_title": "Payment Type Code", "y_axis_title": "Trips",
-                   "x_axis_title_margin": 35, "y_axis_title_margin": 50,
+                   "x_axis_title": "Payment method", "y_axis_title": "Trips",
+                   "x_axis_title_margin": 65, "y_axis_title_margin": 50,
                    "y_axis_format": ".3s", "rich_tooltip": True,
                    "show_legend": False}),
     )
