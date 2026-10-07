@@ -1,0 +1,15 @@
+{
+  "name": "Midnight Dispatch",
+  "dataColors": [
+    "#F6C64A",
+    "#2AA7A4",
+    "#E87860",
+    "#8A8EC7",
+    "#5098D6",
+    "#8BC3A9",
+    "#F1A76A"
+  ],
+  "background": "#FDFCF8",
+  "foreground": "#183048",
+  "tableAccent": "#F6C64A"
+}

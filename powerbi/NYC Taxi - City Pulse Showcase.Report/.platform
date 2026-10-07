@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Report",
+    "displayName": "NYC Taxi - City Pulse Showcase"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "8e2a83d5-8c06-42eb-aad6-07e723c52169"
+  }
+}

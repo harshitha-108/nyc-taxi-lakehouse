@@ -66,6 +66,24 @@ Operational checks cover download interruption, breaking schema, local partition
 
 Gold Parquet is the source for the five PostgreSQL serving marts; Superset queries PostgreSQL, not trip-level Raw or Silver. The `NYC Urban Mobility Overview` dashboard has ten saved charts: four KPIs followed by paired daily demand/borough, hourly demand/top-zone, and daily amount/payment views. Its native month and scoped borough filters, light theme, layout, and styling are reproducible through an idempotent REST bootstrap. The two daily trends display pickup dates in January–June 2024 so source-date outliers do not flatten the time axis; this display window does not alter the stored marts or KPI totals. All ten chart-data calls returned data, and a signed-in local browser check showed all ten charts; “Top Pickup Zones” displayed a non-fatal row-limit warning. Example analytical queries are in [serving_examples.sql](sql/serving_examples.sql). There is no claim of real-time analytics.
 
+### Power BI — City Pulse
+
+The separate, three-page [Power BI Desktop project](powerbi/NYC%20Taxi%20-%20City%20Pulse%20Showcase.pbip) presents the same local mobility data through an overview, pickup geography, and fares/payments. It includes month filtering, KPI insights, demand trends, a pickup-zone map, and a payment-method donut. This is an editable `.pbip` project, not a deployed Power BI service report.
+
+City Pulse — overview and demand:
+
+![Power BI City Pulse overview and demand](docs/images/powerbi-city-pulse-overview.png)
+
+Boroughs & Zones — pickup geography:
+
+![Power BI boroughs and pickup zones](docs/images/powerbi-city-pulse-geography.png)
+
+Fare & Payment — trip amounts and payment mix:
+
+![Power BI fares and payment methods](docs/images/powerbi-city-pulse-fares.png)
+
+The report imports four **aggregated** serving-mart CSV exports. CSVs, imported-data cache, and local settings are deliberately excluded from Git; a fresh clone needs a local export and refresh before the visuals show data. See the [Power BI setup and limitations](powerbi/README.md).
+
 ## Performance engineering
 
 For the **January 2024 Gold workload**, persisted Silver input took a **59.92 s median** versus **36.36 s** after removing persistence from production code: an observed **39.31% lower local median**. The three measured production runs were 37.296, 36.362, and 33.899 seconds. This is a single-machine Docker result with warm/mixed caches and separate similarly warmed sessions; it is workload-specific, not a general claim that caching hurts Spark. Business-value digests, geography, Iceberg/serving publication, and recovery checks matched after the change.
@@ -133,6 +151,7 @@ src/nyc_taxi_lakehouse/   Ingestion, Bronze/Silver/Gold, schema, orchestration, 
 airflow/dags/              Monthly Airflow control-plane DAG
 configs/contracts/         Versioned source schema contract
 scripts/                   Initialization, dashboard, benchmark, validation utilities
+powerbi/                   Editable Power BI project and local refresh instructions
 sql/                       Read-only serving query examples
 tests/unit/                Deterministic unit and contract tests
 tests/integration/         Spark, service and failure-recovery tests

@@ -49,3 +49,7 @@ airflow/plugins/__pycache__/
 *.code-workspace
 .DS_Store
 Thumbs.db
+
+# Power BI Desktop machine-specific settings and imported-data cache
+**/.pbi/localSettings.json
+**/.pbi/cache.abf
