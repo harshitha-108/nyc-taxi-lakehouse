@@ -38,36 +38,65 @@ SERIES_COLORS = {
 }
 MART_NAMES = (
     "daily_trip_metrics", "hourly_demand", "pickup_location_performance",
-    "payment_type_summary", "pickup_zone_performance",
+    "payment_type_summary", "pickup_zone_performance", "takeaway_breakdown",
 )
 SUPPORTED_VIZ_TYPES = frozenset({
-    "big_number_total", "echarts_timeseries_line", "echarts_timeseries_bar",
+    "big_number_total", "echarts_timeseries_line", "echarts_timeseries_bar", "pie", "table",
 })
 HEADER_MARKDOWN = (
+    "# 🗽 NYC Urban Mobility\n"
+    "Yellow Taxi Performance & Demand Analytics"
+)
+PUBLISHED_OVERVIEW_MARKDOWN = (
     "# NYC Urban Mobility\n"
     "Yellow Taxi Performance & Demand Analytics\n\n"
     "January–June 2024 | NYC Yellow Taxi Trips"
 )
+TAKEAWAYS_MARKDOWN = (
+    "### Key Takeaways\n"
+    "January–June 2024, all boroughs (unfiltered snapshot):\n\n"
+    "- **20.0M** quality-validated Yellow Taxi trips.\n"
+    "- **6 PM** was the busiest pickup hour across the six months.\n"
+    "- **Manhattan** accounted for most pickup trips.\n"
+    "- **Credit card** was the most common payment method."
+)
+LEGACY_OVERVIEW_MARKDOWN = (HEADER_MARKDOWN + "\n\n" + TAKEAWAYS_MARKDOWN).replace(
+    "Yellow Taxi Performance & Demand Analytics",
+    "Yellow Taxi Performance & Demand Analytics | January–June 2024",
+)
+OVERVIEW_MARKDOWN = (HEADER_MARKDOWN + "\n\n### Key Takeaways\n"
+                     "These insights update with Source Month and Pickup Borough filters.")
+TAXI_ICON_OVERVIEW_MARKDOWN = LEGACY_OVERVIEW_MARKDOWN.replace("# 🗽 ", "# 🚕 ", 1)
+PREVIOUS_OVERVIEW_MARKDOWN = (HEADER_MARKDOWN + "\n\n### Key Takeaways\n"
+                              "The four figures below respond to Source Month and Pickup "
+                              "Borough filters.")
+OVERVIEW_HEIGHT = 18
+INSIGHT_NAMES = (
+    "Insight Busiest Hour", "Insight Top Borough", "Insight Top Payment",
+)
 DASHBOARD_CSS = """
-.dashboard-content { background: #f5f7fb !important; }
+.dashboard-content { background: #f7f9fc !important; }
 .dashboard-component-chart-holder:has(> h1) {
-  padding: 8px 20px;
-  border-top: 4px solid #1e4765;
-  background: linear-gradient(180deg, #f2f6f9, #fff 70%);
+  padding: 10px 18px;
+  border-top: 3px solid #1e4765;
+  background: linear-gradient(180deg, #f5f9ff, #fff 75%);
 }
 .dashboard-component-chart-holder > h1 {
-  margin: 0 0 4px; font-size: 30px; font-weight: 700; letter-spacing: -0.025em;
+  margin: 0 0 2px; font-size: 26px; font-weight: 700; letter-spacing: -0.025em;
   color: #14243a;
 }
-.dashboard-component-chart-holder > p { margin: 0 0 4px; color: #52657d; font-size: 14px; }
+.dashboard-component-chart-holder > p { margin: 0 0 3px; color: #52657d; font-size: 13px; }
 .dashboard-component-chart-holder {
-  background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
-  box-shadow: 0 2px 10px rgba(20, 36, 58, 0.04);
+  background: #fff; border: 1px solid #e4eaf2; border-radius: 9px;
+  box-shadow: 0 2px 8px rgba(20, 36, 58, 0.035);
 }
 .dashboard-component-chart-holder .header-title { color: #24364d; font-weight: 600; }
 .dashboard-component-chart-holder:has(.chart-slice):not(:has(.big_number_total)) {
-  border-top: 4px solid var(--chart-accent, #1e4765);
-  background: linear-gradient(180deg, var(--chart-tint, #f2f6f9), #fff 24%);
+  border-top: 2px solid var(--chart-accent, #dce5f0);
+  background: #fff;
+}
+.dashboard-component-chart-holder:has([data-test-chart-name="Daily Trips"]) {
+  --chart-accent: #1e4765; border-top-width: 3px;
 }
 .dashboard-component-chart-holder:has([data-test-chart-name="Daily Total Amount"]) {
   --chart-accent: #0e7c86; --chart-tint: #edf8f8;
@@ -85,8 +114,8 @@ DASHBOARD_CSS = """
   --chart-accent: #5b6c82; --chart-tint: #f3f5f8;
 }
 .dashboard-component-chart-holder:has(.big_number_total) {
-  border-top: 4px solid var(--kpi-accent, #1e4765);
-  background: linear-gradient(180deg, var(--kpi-tint, #f3f7fa), #fff 45%);
+  border-top: 3px solid var(--kpi-accent, #1e4765);
+  background: linear-gradient(135deg, var(--kpi-tint, #f3f7fa), #fff 90%);
 }
 .dashboard-component-chart-holder:has([data-test-chart-name="Total Valid Trips"]) {
   --kpi-accent: #1e4765; --kpi-tint: #f2f6f9;
@@ -95,15 +124,191 @@ DASHBOARD_CSS = """
   --kpi-accent: #0e7c86; --kpi-tint: #edf8f8;
 }
 .dashboard-component-chart-holder:has([data-test-chart-name="Average Trip Distance"]) {
-  --kpi-accent: #2e8062; --kpi-tint: #f0f8f3;
+  --kpi-accent: #ae8234; --kpi-tint: #fff8eb;
 }
 .dashboard-component-chart-holder:has([data-test-chart-name="Average Trip Duration"]) {
-  --kpi-accent: #b0783d; --kpi-tint: #fcf6ed;
+  --kpi-accent: #bd625c; --kpi-tint: #fff1f0;
 }
 .dashboard-component-chart-holder .big_number_total .header-line {
   color: var(--kpi-accent, #1e4765) !important;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+}
+.dashboard-component-chart-holder:has(.big_number_total) .header-title {
+  display: flex; align-items: center; gap: 9px;
+}
+.dashboard-component-chart-holder:has(.big_number_total) .header-title::before {
+  display: inline-grid; place-items: center; flex: 0 0 28px;
+  width: 28px; height: 28px; border-radius: 8px;
+  background: var(--kpi-tint, #f3f7fa); color: var(--kpi-accent, #1e4765);
+  font-size: 20px; line-height: 1;
+}
+.dashboard-component-chart-holder:has([data-test-chart-name="Total Valid Trips"])
+  .header-title::before { content: "👥"; }
+.dashboard-component-chart-holder:has([data-test-chart-name="Total Amount"])
+  .header-title::before { content: "＄"; font-weight: 700; }
+.dashboard-component-chart-holder:has([data-test-chart-name="Average Trip Distance"])
+  .header-title::before { content: "📍"; }
+.dashboard-component-chart-holder:has([data-test-chart-name="Average Trip Duration"])
+  .header-title::before { content: "◷"; font-weight: 700; }
+.dashboard-component-chart-holder:has([data-test-chart-name^="Insight "]) {
+  border-top: 4px solid var(--insight-accent, #1e4765) !important;
+  background: linear-gradient(180deg, var(--insight-tint, #f3f7fa), #fff 75%);
+}
+.dashboard-component-chart-holder:has([data-test-chart-name="Insight Busiest Hour"]) {
+  --insight-accent: #0e7c86; --insight-tint: #edf8f8;
+}
+.dashboard-component-chart-holder:has([data-test-chart-name="Insight Top Borough"]) {
+  --insight-accent: #2e8062; --insight-tint: #f0f8f3;
+}
+.dashboard-component-chart-holder:has([data-test-chart-name="Insight Top Payment"]) {
+  --insight-accent: #ae8234; --insight-tint: #fff8eb;
+}
+.grid-row:has([data-test-chart-name="Insight Busiest Hour"]) {
+  margin-top: -1px !important;
+  padding: 0 12px 14px;
+  background: #fff;
+  border: 1px solid #e4eaf2;
+  border-top: 0;
+  border-radius: 0 0 9px 9px;
+}
+.grid-row:has(#MARKDOWN-INTRO) {
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+}
+.grid-row:has(#MARKDOWN-INTRO) .resizable-container,
+.grid-row:has(#MARKDOWN-INTRO) .dashboard-component-chart-holder {
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
+.grid-row:has(#MARKDOWN-INTRO) .dashboard-component-chart-holder {
+  border-bottom: 0;
+  border-radius: 9px 9px 0 0;
+  box-shadow: none;
+}
+[data-test-chart-name^="Insight "] .dt-controls,
+[data-test-chart-name^="Insight "] .dt-pagination,
+[data-test-chart-name^="Insight "] thead,
+[data-test-chart-name^="Insight "] tbody td:nth-child(2),
+[data-test-chart-name^="Insight "] tbody tr:not(:first-child) {
+  display: none;
+}
+[data-test-chart-name^="Insight "] .chart-container,
+[data-test-chart-name^="Insight "] .superset-chart-table > div,
+[data-test-chart-name^="Insight "] .superset-chart-table > div > div,
+[data-test-chart-name^="Insight "] [role="table"],
+[data-test-chart-name^="Insight "] [role="presentation"] {
+  width: 100% !important; overflow: visible !important; visibility: visible !important;
+}
+[data-test-chart-name^="Insight "] table {
+  width: 100% !important; table-layout: auto !important;
+}
+[data-test-chart-name^="Insight "] tbody tr,
+[data-test-chart-name^="Insight "] tbody td {
+  background: transparent !important;
+}
+[data-test-chart-name^="Insight "] colgroup {
+  display: none;
+}
+[data-test-chart-name^="Insight "] tbody td:first-child {
+  width: 100%; padding: 12px 6px; border: 0;
+  color: var(--insight-accent, #1e4765); font-size: 22px; font-weight: 700;
+  overflow: visible; white-space: normal; overflow-wrap: anywhere;
+}
+.dashboard-component-chart-holder:has(> h3) {
+  padding: 12px 18px;
+  background: linear-gradient(135deg, #eef5ff, #f8fbff);
+  border-color: #d9e6f8;
+}
+.dashboard-component-chart-holder > h3 { color: #203b60; margin: 0 0 8px; }
+.dashboard-component-chart-holder > ul { padding-left: 20px; line-height: 1.65; }
+.dashboard-component-chart-holder:has(> h1):has(> h3) {
+  display: flex; flex-direction: column;
+  padding: 18px 24px; border-top: 3px solid #1e4765;
+  background: linear-gradient(180deg, #f5f9ff, #fff 44%);
+}
+.dashboard-component-chart-holder:has(> h1):has(> h3) > h1 {
+  margin: 0 0 2px;
+}
+.dashboard-component-chart-holder:has(> h1):has(> h3) > p:first-of-type {
+  margin: 0 0 12px; padding-bottom: 12px; border-bottom: 1px solid #dbe6f2;
+}
+.dashboard-component-chart-holder:has(> h1):has(> h3) > h3 {
+  margin: 0 0 2px; font-size: 18px; font-weight: 700;
+}
+.dashboard-component-chart-holder:has(> h1):has(> h3) > p:nth-of-type(2) {
+  margin: 0 0 10px;
+}
+.dashboard-component-chart-holder:has(> h1):has(> h3) > ul {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px; margin: 0; padding: 0; list-style: none; line-height: 1.4;
+}
+.dashboard-component-chart-holder:has(> h1):has(> h3) > ul > li {
+  position: relative; padding: 12px 14px 12px 48px;
+  border: 1px solid #dde8f3; border-left: 3px solid #1e4765;
+  border-radius: 7px; background: #f7faff; font-size: 14px; font-weight: 400;
+}
+.dashboard-component-chart-holder:has(> h1):has(> h3) > ul > li strong {
+  font-weight: 700;
+}
+.dashboard-component-chart-holder:has(> h1):has(> h3) > ul > li::before {
+  position: absolute; left: 13px; top: 50%; transform: translateY(-50%);
+  font-size: 20px; line-height: 1;
+}
+.dashboard-component-chart-holder:has(> h1):has(> h3) > ul > li:nth-child(1)::before {
+  content: "🚕";
+}
+.dashboard-component-chart-holder:has(> h1):has(> h3) > ul > li:nth-child(2) {
+  border-left-color: #0e7c86; background: #f4fbfb;
+}
+.dashboard-component-chart-holder:has(> h1):has(> h3) > ul > li:nth-child(2)::before {
+  content: "🕕";
+}
+.dashboard-component-chart-holder:has(> h1):has(> h3) > ul > li:nth-child(3) {
+  border-left-color: #2e8062; background: #f5fbf7;
+}
+.dashboard-component-chart-holder:has(> h1):has(> h3) > ul > li:nth-child(3)::before {
+  content: "🏙️";
+}
+.dashboard-component-chart-holder:has(> h1):has(> h3) > ul > li:nth-child(4) {
+  border-left-color: #ae8234; background: #fffbf3;
+}
+.dashboard-component-chart-holder:has(> h1):has(> h3) > ul > li:nth-child(4)::before {
+  content: "💳";
+}
+@media (max-width: 1100px) {
+  .resizable-container:has(h1):has(h3) {
+    height: auto !important;
+  }
+  .dashboard-component-chart-holder:has(> h1):has(> h3) {
+    height: auto !important; overflow: visible;
+  }
+  .dashboard-component-chart-holder:has(> h1):has(> h3) > ul {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 800px) {
+  .resizable-container:has(h1):has(h3) {
+    height: auto !important;
+  }
+  .dashboard-component-chart-holder:has(> h1):has(> h3) {
+    height: auto !important; overflow: visible;
+  }
+  .dashboard-component-chart-holder:has(> h1):has(> h3) > h3 {
+    margin-top: 0;
+  }
+  .dashboard-component-chart-holder:has(> h1):has(> h3) > ul {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .grid-row:has(.big_number_total) { flex-wrap: wrap !important; }
+  .grid-row:has(.big_number_total) > .dragdroppable-column {
+    flex: 0 0 calc(50% - 20px) !important;
+  }
+  .grid-row:has(.big_number_total) .resizable-container {
+    width: 100% !important; max-width: 100% !important;
+  }
 }
 """.strip()
 
@@ -195,29 +400,53 @@ def chart_specs() -> tuple[ChartSpec, ...]:
                    "metrics": [metric("trip_count", "Zone Pickups")],
                    "show_legend": False}),
         ChartSpec("Payment Type Trips", "payment_type_summary",
-                  "echarts_timeseries_bar",
-                  {**no_time, "x_axis": {"expressionType": "SQL",
-                                           "columnType": "BASE_AXIS",
-                                           "sqlExpression": PAYMENT_TYPE_LABEL_SQL,
-                                           "label": "Payment method"},
-                   "x_axis_force_categorical": True, "x_axis_label_rotation": 35,
-                   "groupby": [], "metrics": [metric("trip_count", "Payment Trips")],
-                   "x_axis_title": "Payment method", "y_axis_title": "Trips",
-                   "x_axis_title_margin": 65, "y_axis_title_margin": 50,
-                   "y_axis_format": ".3s", "rich_tooltip": True,
-                   "show_legend": False}),
+                  "pie",
+                  {**no_time, "groupby": [{"expressionType": "SQL",
+                                            "columnType": "GROUP_BY",
+                                            "sqlExpression": PAYMENT_TYPE_LABEL_SQL,
+                                            "label": "Payment method"}],
+                   "metric": metric("trip_count", "Payment Trips"),
+                   "row_limit": 10, "sort_by_metric": True,
+                   "donut": True, "innerRadius": 55, "outerRadius": 75,
+                   "show_legend": True, "legendOrientation": "right",
+                   "legendType": "plain", "show_labels": False,
+                   "number_format": ",.3s"}),
+        ChartSpec("Insight Busiest Hour", "takeaway_breakdown", "table",
+                  {**no_time, "query_mode": "aggregate", "page_length": 1,
+                   "groupby": [{"expressionType": "SQL", "columnType": "GROUP_BY",
+                                "sqlExpression": (
+                                    "to_char(make_time(pickup_hour, 0, 0), 'FMHH12 AM')"),
+                                "label": "Pickup hour"}],
+                   "metrics": [metric("trip_count", "Trips")],
+                   "orderby": [[metric("trip_count", "Trips"), False]]}),
+        ChartSpec("Insight Top Borough", "takeaway_breakdown", "table",
+                  {**no_time, "query_mode": "aggregate", "page_length": 1,
+                   "groupby": ["borough"],
+                   "metrics": [metric("trip_count", "Trips")],
+                   "orderby": [[metric("trip_count", "Trips"), False]]}),
+        ChartSpec("Insight Top Payment", "takeaway_breakdown", "table",
+                  {**no_time, "query_mode": "aggregate", "page_length": 1,
+                   "groupby": [{"expressionType": "SQL", "columnType": "GROUP_BY",
+                                "sqlExpression": PAYMENT_TYPE_LABEL_SQL,
+                                "label": "Payment method"}],
+                   "metrics": [metric("trip_count", "Trips")],
+                   "orderby": [[metric("trip_count", "Trips"), False]]}),
     )
 
 
 def validate_chart_specs(specs: tuple[ChartSpec, ...]) -> None:
     """Fail before API writes if a saved chart cannot render in pinned Superset 6."""
-    if len(specs) != 10 or len({spec.name for spec in specs}) != len(specs):
-        raise ValueError("Dashboard requires ten uniquely named charts.")
+    if len(specs) != 13 or len({spec.name for spec in specs}) != len(specs):
+        raise ValueError("Dashboard requires thirteen uniquely named charts.")
     for spec in specs:
         if spec.mart not in MART_NAMES or spec.viz_type not in SUPPORTED_VIZ_TYPES:
             raise ValueError(f"Unsupported dashboard definition: {spec.name}")
         if spec.viz_type == "echarts_timeseries_bar" and not spec.params.get("x_axis"):
             raise ValueError(f"Bar chart lacks a category axis: {spec.name}")
+        if spec.viz_type == "pie" and not spec.params.get("groupby"):
+            raise ValueError(f"Pie chart lacks a category dimension: {spec.name}")
+        if spec.viz_type == "table" and not spec.params.get("groupby"):
+            raise ValueError(f"Table chart lacks a category dimension: {spec.name}")
 
 
 def query_context(dataset_id: int, params: dict[str, object]) -> str:
@@ -231,7 +460,8 @@ def query_context(dataset_id: int, params: dict[str, object]) -> str:
         "queries": [{"columns": columns, "metrics": metrics, "filters": [],
                      "time_range": params.get("time_range", "No filter"),
                      "row_limit": params.get("row_limit", 1000),
-                     "order_desc": params.get("order_desc", False)}],
+                     "order_desc": params.get("order_desc", False),
+                     "orderby": params.get("orderby", [])}],
         "form_data": params, "result_format": "json", "result_type": "full",
     })
 
@@ -268,7 +498,7 @@ class SupersetClient:
 
 
 def _layout(chart_ids: dict[str, int]) -> str:
-    """Put a compact introduction above KPIs and three balanced analytical rows."""
+    """Create a fresh dashboard in the saved five-row presentation order."""
     positions: dict[str, object] = {
         "DASHBOARD_VERSION_KEY": "v2",
         "ROOT_ID": {"id": "ROOT_ID", "type": "ROOT", "children": ["GRID_ID"]},
@@ -276,17 +506,17 @@ def _layout(chart_ids: dict[str, int]) -> str:
                     "children": []},
         "HEADER_ID": {"id": "HEADER_ID", "type": "HEADER", "meta": {"text": TITLE}},
     }
-    names = list(chart_ids)
+    names = [name for name in chart_ids if name not in INSIGHT_NAMES]
     rows = (
         ("MARKDOWN-INTRO",),
         tuple(names[:4]),
-        ("Daily Trips", "Pickup Trips by Borough"),
-        ("Hourly Pickup Demand", "Top Pickup Zones"),
-        ("Daily Total Amount", "Payment Type Trips"),
+        ("Daily Trips", "Hourly Pickup Demand"),
+        ("Payment Type Trips", "Pickup Trips by Borough"),
+        ("Top Pickup Zones", "Daily Total Amount"),
     )
     for index, row in enumerate(rows, start=1):
         row_id = f"ROW-{index}"
-        children = ["MARKDOWN-INTRO" if name == "MARKDOWN-INTRO"
+        children = [name if name.startswith("MARKDOWN-")
                     else f"CHART-{chart_ids[name]}" for name in row]
         positions["GRID_ID"]["children"].append(row_id)
         positions[row_id] = {"id": row_id, "type": "ROW", "children": children,
@@ -296,17 +526,16 @@ def _layout(chart_ids: dict[str, int]) -> str:
             positions["MARKDOWN-INTRO"] = {
                 "id": "MARKDOWN-INTRO", "type": "MARKDOWN", "children": [],
                 "parents": ["ROOT_ID", "GRID_ID", row_id],
-                "meta": {"code": HEADER_MARKDOWN, "width": 12, "height": 18},
+                "meta": {"code": OVERVIEW_MARKDOWN, "width": 12,
+                         "height": OVERVIEW_HEIGHT},
             }
             continue
         for name in row:
             chart_id = chart_ids[name]
             if index == 2:
                 width = 3
-            elif index == 4:
-                width = 7 if name == row[0] else 5
             else:
-                width = 8 if name == row[0] else 4
+                width = 6
             label = {
                 "Total Valid Trips": "Total Trips",
                 "Average Trip Distance": "Avg Trip Distance (mi)",
@@ -323,11 +552,72 @@ def _layout(chart_ids: dict[str, int]) -> str:
                          "sliceNameOverride": label,
                          "width": width, "height": 24 if index == 2 else 48},
             }
+    _add_insight_row(positions, chart_ids)
+    return json.dumps(positions)
+
+
+def _add_insight_row(positions: dict[str, object], chart_ids: dict[str, int]) -> None:
+    """Insert responsive insights without touching the user's existing chart rows."""
+    row_id = "ROW-INSIGHTS"
+    if row_id in positions["GRID_ID"]["children"]:
+        positions["GRID_ID"]["children"].remove(row_id)
+    positions["GRID_ID"]["children"].insert(1, row_id)
+    positions[row_id] = {
+        "id": row_id, "type": "ROW", "parents": ["ROOT_ID", "GRID_ID"],
+        "children": [f"CHART-{chart_ids[name]}" for name in INSIGHT_NAMES],
+        "meta": {"background": "BACKGROUND_TRANSPARENT"},
+    }
+    labels = ("🕕 Busiest Pickup Hour", "🏙️ Top Pickup Borough",
+              "💳 Most Used Payment Method")
+    for name, label in zip(INSIGHT_NAMES, labels, strict=True):
+        chart_id = chart_ids[name]
+        positions[f"CHART-{chart_id}"] = {
+            "id": f"CHART-{chart_id}", "type": "CHART", "children": [],
+            "parents": ["ROOT_ID", "GRID_ID", row_id],
+            "meta": {"chartId": chart_id, "sliceName": name,
+                     "sliceNameOverride": label, "width": 4, "height": 18},
+        }
+
+
+def _merge_overview_layout(saved_position_json: str,
+                           chart_ids: dict[str, int]) -> str:
+    """Replace static insights while preserving every existing chart row and its order."""
+    positions = json.loads(saved_position_json)
+    intro = positions.get("MARKDOWN-INTRO")
+    if not isinstance(intro, dict) or intro.get("type") != "MARKDOWN":
+        raise ValueError("Saved dashboard has no expected introduction tile.")
+    if intro.get("meta", {}).get("code") not in (
+        OVERVIEW_MARKDOWN, PREVIOUS_OVERVIEW_MARKDOWN, LEGACY_OVERVIEW_MARKDOWN,
+        TAXI_ICON_OVERVIEW_MARKDOWN, HEADER_MARKDOWN, PUBLISHED_OVERVIEW_MARKDOWN,
+    ):
+        raise ValueError("Saved dashboard has no expected overview tile.")
+    top = positions.get("ROW-1")
+    if top is None or top.get("children") not in (
+        ["MARKDOWN-INTRO"], ["MARKDOWN-INTRO", "MARKDOWN-TAKEAWAYS"],
+    ):
+        raise ValueError("Saved dashboard has an unexpected top row.")
+    if "MARKDOWN-TAKEAWAYS" in positions:
+        takeaway = positions["MARKDOWN-TAKEAWAYS"]
+        if (takeaway.get("type") != "MARKDOWN"
+                or takeaway.get("meta", {}).get("code") != TAKEAWAYS_MARKDOWN):
+            raise ValueError("Saved takeaway tile was edited; refusing to remove it.")
+        del positions["MARKDOWN-TAKEAWAYS"]
+        top["children"] = ["MARKDOWN-INTRO"]
+    intro["meta"]["code"] = OVERVIEW_MARKDOWN
+    intro["meta"]["width"] = 12
+    intro["meta"]["height"] = OVERVIEW_HEIGHT
+    old_insight_id = next((key for key, node in positions.items()
+                           if key.startswith("CHART-") and isinstance(node, dict)
+                           and node.get("meta", {}).get("sliceName") == "Insight Total Trips"),
+                          None)
+    if old_insight_id is not None:
+        del positions[old_insight_id]
+    _add_insight_row(positions, chart_ids)
     return json.dumps(positions)
 
 
 def _filters(dataset_ids: dict[str, int], chart_ids: dict[str, int]) -> list[dict[str, object]]:
-    """Month applies across all marts; borough only to the two geographic charts."""
+    """Month applies to all; borough applies to geography and responsive insights."""
     common = {"type": "NATIVE_FILTER", "filterType": "filter_select",
               "defaultDataMask": {"extraFormData": {}, "filterState": {}, "ownState": {}},
               "cascadeParentIds": [], "controlValues": {"multiSelect": True,
@@ -337,13 +627,31 @@ def _filters(dataset_ids: dict[str, int], chart_ids: dict[str, int]) -> list[dic
     month = {**common, "id": "NATIVE_FILTER-month", "name": "Source Month",
              "targets": [{"datasetId": dataset_ids["daily_trip_metrics"],
                           "column": {"name": "_source_month"}}]}
-    geographic = {chart_ids["Pickup Trips by Borough"], chart_ids["Top Pickup Zones"]}
+    geographic = {chart_ids[name] for name in (
+        "Pickup Trips by Borough", "Top Pickup Zones", *INSIGHT_NAMES
+    )}
     borough = {**common, "id": "NATIVE_FILTER-borough", "name": "Pickup Borough",
                "targets": [{"datasetId": dataset_ids["pickup_zone_performance"],
                             "column": {"name": "borough"}}],
                "scope": {"rootPath": ["ROOT_ID"], "excluded": [
                    chart_id for chart_id in chart_ids.values() if chart_id not in geographic]}}
     return [month, borough]
+
+
+def _unlink_legacy_insight(client: SupersetClient, charts: dict[str, int],
+                           dashboard_id: int) -> None:
+    """Remove the retired duplicate trip insight from this dashboard only."""
+    chart_id = charts.get("Insight Total Trips")
+    if chart_id is None:
+        return
+    chart = client.request("GET", f"/api/v1/chart/{chart_id}")["result"]
+    if chart.get("slice_name") != "Insight Total Trips":
+        raise ValueError("Retired insight chart has an unexpected identity.")
+    dashboards = [item["id"] for item in chart.get("dashboards", [])]
+    if dashboard_id in dashboards:
+        client.request("PUT", f"/api/v1/chart/{chart_id}", {
+            "dashboards": [item_id for item_id in dashboards if item_id != dashboard_id],
+        })
 
 
 def bootstrap(client: SupersetClient) -> dict[str, object]:
@@ -410,9 +718,13 @@ def bootstrap(client: SupersetClient) -> dict[str, object]:
     if dashboard_id is None:
         dashboard_id = client.request("POST", "/api/v1/dashboard/", dashboard_body)["id"]
     else:
+        saved = client.request("GET", f"/api/v1/dashboard/{dashboard_id}")["result"]
+        dashboard_body["position_json"] = _merge_overview_layout(
+            saved["position_json"], chart_ids)
         client.request("PUT", f"/api/v1/dashboard/{dashboard_id}", dashboard_body)
     for chart_id in chart_ids.values():
         client.request("PUT", f"/api/v1/chart/{chart_id}", {"dashboards": [dashboard_id]})
+    _unlink_legacy_insight(client, existing_charts, dashboard_id)
     LOGGER.info("Superset dashboard ready: id=%s title=%s", dashboard_id, TITLE)
     return {"database_id": database_id, "dataset_ids": dataset_ids,
             "chart_ids": chart_ids, "dashboard_id": dashboard_id}

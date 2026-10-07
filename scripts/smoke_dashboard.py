@@ -1,4 +1,4 @@
-"""Prove the saved Superset dashboard executes all ten PostgreSQL-backed charts."""
+"""Prove the saved Superset dashboard executes its PostgreSQL-backed charts."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def smoke(client: SupersetClient) -> dict[str, object]:
                 if item.get("database", {}).get("id") == db_id
                 and item.get("schema") == "analytics"]
     if {item["table_name"] for item in datasets} != set(MART_NAMES):
-        raise RuntimeError("Superset datasets do not match the five serving marts.")
+        raise RuntimeError("Superset datasets do not match the serving tables.")
     dashboards = [item for item in client.listed("dashboard")
                   if item["dashboard_title"] == TITLE]
     if len(dashboards) != 1:
@@ -36,8 +36,8 @@ def smoke(client: SupersetClient) -> dict[str, object]:
     if {item.get("name") for item in filters} != {"Source Month", "Pickup Borough"}:
         raise RuntimeError("Expected source-month and pickup-borough dashboard filters.")
     charts = client.request("GET", f"/api/v1/dashboard/{dashboard_id}/charts")["result"]
-    if len(charts) != 10:
-        raise RuntimeError(f"Dashboard has {len(charts)} charts rather than ten.")
+    if len(charts) != 13:
+        raise RuntimeError(f"Dashboard has {len(charts)} charts rather than thirteen.")
     query_proof = {}
     for chart in charts:
         chart_id = chart["id"]

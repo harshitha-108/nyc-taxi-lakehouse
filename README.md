@@ -64,7 +64,7 @@ Operational checks cover download interruption, breaking schema, local partition
 
 ## Analytics and dashboard
 
-Gold Parquet is the source for the five PostgreSQL serving marts; Superset queries PostgreSQL, not trip-level Raw or Silver. The `NYC Urban Mobility Overview` dashboard has ten saved charts: four KPIs followed by paired daily demand/borough, hourly demand/top-zone, and daily amount/payment views. Its native month and scoped borough filters, light theme, layout, and styling are reproducible through an idempotent REST bootstrap. The two daily trends display pickup dates in January–June 2024 so source-date outliers do not flatten the time axis; this display window does not alter the stored marts or KPI totals. All ten chart-data calls returned data, and a signed-in local browser check showed all ten charts; “Top Pickup Zones” displayed a non-fatal row-limit warning. Example analytical queries are in [serving_examples.sql](sql/serving_examples.sql). There is no claim of real-time analytics.
+Gold Parquet is the source for the five PostgreSQL serving marts; a separate, compact Silver-derived breakdown powers filter-responsive takeaways. Superset queries PostgreSQL, not trip-level Raw or Silver. The `NYC Urban Mobility Overview` dashboard has 13 saved charts: four KPIs, three insight cards, and paired daily demand/borough, hourly demand/top-zone, and daily amount/payment views. Its native month and scoped borough filters, light theme, layout, and styling are reproducible through an idempotent REST bootstrap. The two daily trends display pickup dates in January–June 2024 so source-date outliers do not flatten the time axis; this display window does not alter the stored marts or KPI totals. All 13 chart-data calls returned data in the local smoke check, and a signed-in browser check showed the dashboard; “Top Pickup Zones” displayed a non-fatal row-limit warning. Example analytical queries are in [serving_examples.sql](sql/serving_examples.sql). There is no claim of real-time analytics.
 
 ### Power BI — City Pulse
 
@@ -137,6 +137,7 @@ docker compose --profile airflow up -d airflow-postgres
 docker compose --profile airflow run --rm analytics-db-init
 docker compose run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.storage.migrate --start 2024-01 --end 2024-01
 docker compose --profile airflow run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.serving.publisher --taxi-type yellow --start 2024-01 --end 2024-01
+docker compose --profile airflow run --rm --no-deps pipeline python -m nyc_taxi_lakehouse.serving.takeaways --taxi-type yellow --start 2024-01 --end 2024-01
 docker compose --profile airflow --profile dashboard up -d superset
 docker compose --profile airflow --profile dashboard run --rm --no-deps pipeline python scripts/bootstrap_dashboard.py
 docker compose --profile airflow --profile dashboard run --rm --no-deps pipeline python -m scripts.smoke_dashboard
@@ -166,6 +167,6 @@ docs/                      Technical development history
 
 ## Limitations and production mapping
 
-This is a local single-machine demonstration, **not** a hardened or managed-cloud deployment. The SQLite Iceberg JDBC catalog is single-writer; Iceberg commits are per table, whereas PostgreSQL serving publication is transactional across five marts per period. The pinned community MinIO image and development credentials are for loopback-only use. Airflow's paused schedule must account for TLC release lag. Superset's local setup lacks production rate limiting/CSP; the zone chart has a row-limit warning and browser visual regression is manual. Full historical data and performance runs are excluded from CI, and the measured Gold improvement does not establish performance at larger scale.
+This is a local single-machine demonstration, **not** a hardened or managed-cloud deployment. The SQLite Iceberg JDBC catalog is single-writer; Iceberg commits are per table, whereas PostgreSQL serving publication is transactional across five Gold marts per period. The takeaway breakdown is published in a separate transaction: if that step fails, retry the serving stage before relying on the insight cards. The pinned community MinIO image and development credentials are for loopback-only use. Airflow's paused schedule must account for TLC release lag. Superset's local setup lacks production rate limiting/CSP; the zone chart has a row-limit warning and browser visual regression is manual. Full historical data and performance runs are excluded from CI, and the measured Gold improvement does not establish performance at larger scale.
 
 If deployed elsewhere, MinIO could map to S3/ADLS, local Spark to managed Spark, local Airflow to managed Airflow, and local PostgreSQL/Superset to appropriate managed serving/BI services. Those are **reference mappings**, not services used by this repository. Kafka, CDC, and dbt are not implemented.

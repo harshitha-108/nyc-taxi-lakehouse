@@ -1,6 +1,7 @@
 """Focused control-plane adapters without network or large Spark inputs."""
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,47 @@ from nyc_taxi_lakehouse.orchestration.state import ProcessingPeriod
 from nyc_taxi_lakehouse.schema.validator import Compatibility
 from nyc_taxi_lakehouse.storage.config import StorageConfig
 from nyc_taxi_lakehouse.storage.iceberg import TABLES
+
+
+def test_serving_stage_also_publishes_filter_responsive_insights(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    period = ProcessingPeriod(2024, 1)
+    paths = PipelinePaths(silver_dir=tmp_path / "silver",
+                          reference_dir=tmp_path / "reference")
+
+    @dataclass
+    class MartResult:
+        rows: int = 31
+        trip_count: int = 100
+
+    @dataclass
+    class PublishResult:
+        marts: dict[str, MartResult]
+
+    @dataclass
+    class InsightResult:
+        rows: int = 12
+        trips: int = 100
+
+    calls = []
+    monkeypatch.setattr(airflow_stages.ServingConfig, "from_env", lambda: object())
+    monkeypatch.setattr(airflow_stages, "publish_period",
+                        lambda *args, **kwargs: PublishResult({"daily_trip_metrics": MartResult()}))
+    monkeypatch.setattr(airflow_stages, "_spark_stage",
+                        lambda name, operation: operation("spark"))
+
+    def publish_insights(spark, config, requested_period, **kwargs):
+        calls.append((spark, requested_period, kwargs))
+        return InsightResult()
+
+    monkeypatch.setattr(airflow_stages, "publish_takeaway_period", publish_insights)
+    result = airflow_stages.execute_stage("publish_serving", period, paths=paths)
+    assert result["trip_count"] == result["takeaway_trips"] == 100
+    assert result["takeaway_rows"] == 12
+    assert calls == [("spark", period, {"taxi_type": "yellow",
+                                    "silver_dir": paths.silver_dir,
+                                    "reference_dir": paths.reference_dir})]
 
 
 def test_breaking_schema_stage_raises_without_spark(

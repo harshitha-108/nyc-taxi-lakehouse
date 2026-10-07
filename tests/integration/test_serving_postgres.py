@@ -14,12 +14,19 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from psycopg2 import sql
+from pyspark.sql import SparkSession
 
+from nyc_taxi_lakehouse.bronze.processor import create_spark_session
 from nyc_taxi_lakehouse.orchestration.state import ProcessingPeriod
 from nyc_taxi_lakehouse.serving import publisher
 from nyc_taxi_lakehouse.serving.config import ServingConfig
 from nyc_taxi_lakehouse.serving.database import MARTS, Mart
 from nyc_taxi_lakehouse.serving.publisher import gold_path, publish_period
+from nyc_taxi_lakehouse.serving.takeaways import (
+    TakeawayPublicationError,
+    publish_takeaway_period,
+)
+from nyc_taxi_lakehouse.silver.processor import SilverRequest, silver_partition_path
 
 pytestmark = [
     pytest.mark.integration,
@@ -88,6 +95,75 @@ def _snapshot(config: ServingConfig, period: ProcessingPeriod) -> dict[str, tupl
                     (period.year, period.month))
                 values[mart.name] = cursor.fetchone()
             return values
+
+
+def test_takeaway_breakdown_replaces_only_one_period_and_rolls_back(
+    isolated_config: ServingConfig, tmp_path: Path
+) -> None:
+    january = ProcessingPeriod(2024, 1)
+    february = ProcessingPeriod(2024, 2)
+    for period in (january, february):
+        _write_gold(tmp_path / "gold", period)
+        publish_period(isolated_config, period, gold_dir=tmp_path / "gold")
+    reference_path = tmp_path / "reference" / "taxi_zones" / "taxi_zone_lookup.csv"
+    reference_path.parent.mkdir(parents=True)
+    reference_path.write_text(
+        "LocationID,Borough,Zone,service_zone\n"
+        "161,Manhattan,Midtown Center,Yellow Zone\n"
+        "132,Queens,JFK Airport,Airports\n",
+        encoding="utf-8",
+    )
+    spark: SparkSession = create_spark_session("serving-takeaway-integration")
+    try:
+        for period in (january, february):
+            source = silver_partition_path(
+                SilverRequest("yellow", period.year, period.month), tmp_path / "silver"
+            )
+            spark.createDataFrame([
+                (datetime(period.year, period.month, 15, 18, tzinfo=UTC),
+                 161, 1, "yellow", period.year, period.month),
+                (datetime(period.year, period.month, 15, 9, tzinfo=UTC),
+                 132, 2, "yellow", period.year, period.month),
+            ], ["tpep_pickup_datetime", "pickup_location_id", "payment_type",
+                "_source_taxi_type", "_source_year", "_source_month"]).write.parquet(str(source))
+
+        def snapshot(period: ProcessingPeriod) -> tuple[int, int]:
+            with psycopg2.connect(**isolated_config.connect_kwargs()) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(sql.SQL(
+                        "SELECT COUNT(*), SUM(trip_count) FROM {}.takeaway_breakdown "
+                        "WHERE _source_year=%s AND _source_month=%s"
+                    ).format(sql.Identifier(isolated_config.schema)),
+                        (period.year, period.month))
+                    return cursor.fetchone()
+
+        for period in (january, february):
+            result = publish_takeaway_period(
+                spark, isolated_config, period, silver_dir=tmp_path / "silver",
+                reference_dir=tmp_path / "reference",
+            )
+            assert result.trips == 2
+        publish_takeaway_period(
+            spark, isolated_config, january, silver_dir=tmp_path / "silver",
+            reference_dir=tmp_path / "reference",
+        )
+        assert snapshot(january) == (2, 2)
+        assert snapshot(february) == (2, 2)
+        with psycopg2.connect(**isolated_config.connect_kwargs()) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(sql.SQL(
+                    "UPDATE {}.daily_trip_metrics SET trip_count=3 "
+                    "WHERE _source_year=2024 AND _source_month=1"
+                ).format(sql.Identifier(isolated_config.schema)))
+        with pytest.raises(TakeawayPublicationError, match="totals differ"):
+            publish_takeaway_period(
+                spark, isolated_config, january, silver_dir=tmp_path / "silver",
+                reference_dir=tmp_path / "reference",
+            )
+        assert snapshot(january) == (2, 2)
+        assert snapshot(february) == (2, 2)
+    finally:
+        spark.stop()
 
 
 def test_real_postgres_period_replacement_and_rollback(

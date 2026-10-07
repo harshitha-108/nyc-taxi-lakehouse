@@ -27,6 +27,7 @@ from nyc_taxi_lakehouse.reference.taxi_zones import ingest_taxi_zones
 from nyc_taxi_lakehouse.schema.validator import Compatibility, validate_and_report
 from nyc_taxi_lakehouse.serving.config import ServingConfig
 from nyc_taxi_lakehouse.serving.publisher import publish_period, validate_period
+from nyc_taxi_lakehouse.serving.takeaways import publish_takeaway_period
 from nyc_taxi_lakehouse.silver.processor import (
     SilverRequest,
     bronze_partition_path,
@@ -163,8 +164,16 @@ def execute_stage(
         result = publish_period(
             ServingConfig.from_env(), period, taxi_type=taxi_type, gold_dir=active.gold_dir
         )
+        insight = _spark_stage(
+            "takeaways",
+            lambda spark: publish_takeaway_period(
+                spark, ServingConfig.from_env(), period, taxi_type=taxi_type,
+                silver_dir=active.silver_dir, reference_dir=active.reference_dir,
+            ),
+        )
         return {"marts": {name: item.rows for name, item in result.marts.items()},
-                "trip_count": next(iter(result.marts.values())).trip_count}
+                "trip_count": next(iter(result.marts.values())).trip_count,
+                "takeaway_rows": insight.rows, "takeaway_trips": insight.trips}
     if stage == "validate_reconciliation":
         validate_period_artifacts(period, taxi_type, active)
         spark = create_spark_session(
