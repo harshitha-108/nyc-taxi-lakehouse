@@ -1,4 +1,4 @@
-"""Export the four aggregated serving marts used by the offline Power BI report.
+"""Export the aggregated serving marts used by the report and its local chat.
 
 The CSVs stay under ignored ``data/gold/powerbi``; no trip-level data or
 Power BI cache is stored in Git.
@@ -18,6 +18,7 @@ MARTS = {
     "hourly_demand": ("_source_month", "pickup_date", "pickup_hour"),
     "payment_type_summary": ("_source_month", "payment_type"),
     "pickup_zone_performance": ("_source_month", "pickup_location_id"),
+    "takeaway_breakdown": ("_source_month", "borough", "pickup_hour", "payment_type"),
 }
 
 

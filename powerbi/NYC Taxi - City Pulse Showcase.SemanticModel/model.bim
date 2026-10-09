@@ -40,8 +40,15 @@
     "expressions": [
       {
         "name": "CsvRootPath",
+        "annotations": [
+          {
+            "name": "PBI_ResultType",
+            "value": "Text"
+          }
+        ],
+        "expression": "\"C:\\path\\to\\nyc-taxi-lakehouse\\data\\gold\\powerbi\" meta [IsParameterQuery=true, Type=\"Text\", IsParameterQueryRequired=true]",
         "kind": "m",
-        "expression": "\"C:\\path\\to\\nyc-taxi-lakehouse\\data\\gold\\powerbi\" meta [IsParameterQuery=true, Type=\"Text\", IsParameterQueryRequired=true]"
+        "lineageTag": "a308fbe2-950b-4b5a-b9ae-97d2a9e89d49"
       }
     ],
     "relationships": [
@@ -495,7 +502,7 @@
             "source": {
               "expression": [
                 "let",
-"    Source = Csv.Document(File.Contents(CsvRootPath & \"\\\" & \"daily_trip_metrics.csv\"),[Delimiter=\",\", Columns=15, Encoding=1252, QuoteStyle=QuoteStyle.None]),",
+                "    Source = Csv.Document(File.Contents(CsvRootPath & \"\\\" & \"daily_trip_metrics.csv\"),[Delimiter=\",\", Columns=15, Encoding=1252, QuoteStyle=QuoteStyle.None]),",
                 "    #\"Promoted Headers\" = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),",
                 "    #\"Changed Type\" = Table.TransformColumnTypes(#\"Promoted Headers\",{{\"pickup_date\", type date}, {\"trip_count\", Int64.Type}, {\"total_revenue\", type number}, {\"average_fare_amount\", type number}, {\"average_total_amount\", type number}, {\"average_trip_distance\", type number}, {\"average_trip_duration_minutes\", type number}, {\"total_trip_distance\", type number}, {\"average_tip_amount\", type number}, {\"total_tip_amount\", type number}, {\"_gold_processed_at\", type datetime}, {\"_source_taxi_type\", type text}, {\"_source_year\", Int64.Type}, {\"_source_month\", Int64.Type}, {\"_serving_published_at\", type datetime}})",
                 "in",

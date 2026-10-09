@@ -53,3 +53,5 @@ Thumbs.db
 # Power BI Desktop machine-specific settings and imported-data cache
 **/.pbi/localSettings.json
 **/.pbi/cache.abf
+# Private, working PBIP copy created by the local City Pulse launcher
+/powerbi/.local/

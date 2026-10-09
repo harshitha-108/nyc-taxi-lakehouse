@@ -1,0 +1,23 @@
+{
+  "privileges": [
+    { "name": "WebAccess", "essential": true, "parameters": ["http://127.0.0.1:8765"] }
+  ],
+  "supportsEmptyDataView": true,
+  "supportsLandingPage": true,
+  "objects": {},
+  "dataRoles": [
+    { "displayName": "Report month (optional)", "name": "reportMonth", "kind": "Grouping" },
+    { "displayName": "Pickup borough (optional)", "name": "reportBorough", "kind": "Grouping" }
+  ],
+  "dataViewMappings": [
+    {
+      "conditions": [{ "reportMonth": { "max": 1 }, "reportBorough": { "max": 1 } }],
+      "table": {
+        "rows": {
+          "select": [{ "for": { "in": "reportMonth" } }, { "for": { "in": "reportBorough" } }],
+          "dataReductionAlgorithm": { "top": { "count": 1000 } }
+        }
+      }
+    }
+  ]
+}

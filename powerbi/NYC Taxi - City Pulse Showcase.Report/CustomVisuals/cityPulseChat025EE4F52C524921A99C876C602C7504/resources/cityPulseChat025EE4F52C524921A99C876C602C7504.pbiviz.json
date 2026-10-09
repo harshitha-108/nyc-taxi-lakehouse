@@ -1,0 +1,90 @@
+{
+  "visual": {
+    "name": "cityPulseChat",
+    "displayName": "Ask City Pulse",
+    "guid": "cityPulseChat025EE4F52C524921A99C876C602C7504",
+    "visualClassName": "Visual",
+    "version": "1.0.0.9",
+    "description": "Local, evidence-grounded NYC taxi report chat",
+    "supportUrl": "https://github.com/harshitha-108/nyc-taxi-lakehouse",
+    "gitHubUrl": "https://github.com/harshitha-108/nyc-taxi-lakehouse"
+  },
+  "author": {
+    "name": "NYC Taxi Lakehouse",
+    "email": "harshitha-108@users.noreply.github.com"
+  },
+  "apiVersion": "5.11.0",
+  "style": "style/visual.less",
+  "stringResources": {},
+  "capabilities": {
+    "privileges": [
+      {
+        "name": "WebAccess",
+        "essential": true,
+        "parameters": [
+          "http://127.0.0.1:8765"
+        ]
+      }
+    ],
+    "supportsEmptyDataView": true,
+    "supportsLandingPage": true,
+    "objects": {},
+    "dataRoles": [
+      {
+        "displayName": "Report month (optional)",
+        "name": "reportMonth",
+        "kind": "Grouping"
+      },
+      {
+        "displayName": "Pickup borough (optional)",
+        "name": "reportBorough",
+        "kind": "Grouping"
+      }
+    ],
+    "dataViewMappings": [
+      {
+        "conditions": [
+          {
+            "reportMonth": {
+              "max": 1
+            },
+            "reportBorough": {
+              "max": 1
+            }
+          }
+        ],
+        "table": {
+          "rows": {
+            "select": [
+              {
+                "for": {
+                  "in": "reportMonth"
+                }
+              },
+              {
+                "for": {
+                  "in": "reportBorough"
+                }
+              }
+            ],
+            "dataReductionAlgorithm": {
+              "top": {
+                "count": 1000
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "content": {
+    "js": "var cityPulseChat025EE4F52C524921A99C876C602C7504;(()=>{\"use strict\";var t={374(t,e,s){function i(t,e,s){const i=document.createElement(t);return i.className=e,void 0!==s&&(i.textContent=s),i}s.d(e,{H:()=>a});class a{static id=\"CityPulseChatDialog\";static accessCode=\"\";state;messages;authorization;codeInput;input;send;status;sessionId=null;authRequired=!1;constructor(t,e){this.state=e||{month:null,borough:null,scopeNote:\"Full published snapshot\"};const s=i(\"section\",\"city-pulse-chat\"),n=i(\"div\",\"city-pulse-chat-header\");n.append(i(\"div\",\"city-pulse-chat-kicker\",\"NYC YELLOW TAXI  /  DATA ASSISTANT\")),n.append(i(\"h2\",\"city-pulse-chat-title\",\"Ask the city.\")),n.append(i(\"p\",\"city-pulse-chat-subtitle\",\"Answers grounded in the report's published data.\"));const o=i(\"div\",\"city-pulse-chat-scope\",this.state.scopeNote);this.authorization=i(\"div\",\"city-pulse-chat-auth\"),this.authorization.hidden=!0;const h=i(\"label\",\"city-pulse-chat-auth-label\",\"🔐 LOCAL ACCESS CODE\");this.codeInput=i(\"input\",\"city-pulse-chat-auth-input\"),this.codeInput.type=\"password\",this.codeInput.autocomplete=\"off\",this.codeInput.placeholder=\"Paste code shown by the start script\",this.codeInput.value=a.accessCode,h.append(this.codeInput),this.authorization.append(h),this.messages=i(\"div\",\"city-pulse-chat-messages\"),this.messages.setAttribute(\"role\",\"log\"),this.messages.setAttribute(\"aria-live\",\"polite\"),this.addMessage(\"assistant\",\"Hi! Ask me about taxi trips, busiest hours, pickup boroughs, payment methods, or month-to-month changes.\");const c=i(\"div\",\"city-pulse-chat-suggestions\");for(const t of[\"Which month was busiest?\",\"What was the top borough?\",\"Which payment method led?\"]){const e=i(\"button\",\"city-pulse-chat-chip\",t);e.setAttribute(\"type\",\"button\"),e.addEventListener(\"click\",()=>this.ask(t)),c.append(e)}const r=i(\"div\",\"city-pulse-chat-form\");this.input=i(\"input\",\"city-pulse-chat-input\"),this.input.type=\"text\",this.input.maxLength=500,this.input.autocomplete=\"off\",this.input.placeholder=\"Ask about the taxi data…\",this.input.setAttribute(\"aria-label\",\"Question about taxi data\"),this.send=i(\"button\",\"city-pulse-chat-send\",\"Send\"),this.send.type=\"button\",r.append(this.input,this.send);const u=()=>{this.ask(this.input.value)};this.send.addEventListener(\"click\",u),this.input.addEventListener(\"keydown\",t=>{\"Enter\"===t.key&&(t.preventDefault(),t.stopPropagation(),u())}),this.status=i(\"p\",\"city-pulse-chat-status\",\"Local data assistant · answers checked against published data\"),s.append(n,o,this.authorization,this.messages,c,r,this.status),t.element.append(s),this.checkService()}async checkService(){try{const t=await fetch(\"http://127.0.0.1:8765/health\"),e=await t.json();this.authRequired=!0===e.auth_required,this.authorization.hidden=!this.authRequired,\"ready\"!==e.status?this.status.textContent=`Missing chat CSV exports: ${(e.missing_exports||[]).join(\", \")}`:this.authRequired?this.status.textContent=\"Protected local service · paste its current access code\":this.status.textContent=\"Connected to local taxi data · no access code needed\"}catch{this.status.textContent=\"Open powerbi/Open City Pulse.cmd to connect the local data service\"}}addMessage(t,e){const s=i(\"div\",`city-pulse-message city-pulse-message-${t}`);s.append(i(\"div\",\"city-pulse-message-body\",e)),this.messages.append(s),this.messages.scrollTop=this.messages.scrollHeight}async ask(t){const e=t.trim();if(!e||this.send.disabled)return;const s=this.authRequired?this.codeInput.value.trim():\"\";if(this.authRequired&&!s)return this.status.textContent=\"Paste the access code displayed when the local chat service starts.\",void this.codeInput.focus();s&&(a.accessCode=s),this.input.value=\"\",this.addMessage(\"user\",e),this.send.disabled=!0,this.status.textContent=\"Checking published taxi data…\";try{const t={\"Content-Type\":\"application/json\"};s&&(t[\"X-City-Pulse-Code\"]=s);const i=await fetch(\"http://127.0.0.1:8765/chat\",{method:\"POST\",headers:t,body:JSON.stringify({question:e,month:this.state.month,borough:this.state.borough,session_id:this.sessionId})}),a=await i.json();if(!i.ok||a.error)throw new Error(a.error||`HTTP ${i.status}`);this.sessionId=a.session_id||this.sessionId,this.addMessage(\"assistant\",a.answer||\"No answer was returned.\"),this.status.textContent=a.ai_used?\"Local AI interpretation · figures from published marts\":\"Verified report-data answer · local AI optional\"}catch(t){const e=t instanceof Error?t.message:String(t);/access code|HTTP 401/i.test(e)?(this.authRequired=!0,this.authorization.hidden=!1,a.accessCode=\"\",this.codeInput.value=\"\",this.addMessage(\"assistant\",\"That access code was not accepted. Copy the current code from the local chat service terminal and try again.\"),this.status.textContent=\"Access code required\",this.codeInput.focus()):(this.addMessage(\"assistant\",\"I couldn't reach the local taxi data service. Open powerbi/Open City Pulse.cmd and try again.\"),this.status.textContent=`Connection error: ${e}`)}finally{this.send.disabled=!1,this.authRequired&&!this.codeInput.value?this.codeInput.focus():this.input.focus()}}}const n=globalThis;n.dialogRegistry=n.dialogRegistry||{},n.dialogRegistry[a.id]=a},848(t,e,s){s.d(e,{b:()=>n});var i=s(374);const a=[\"Jan\",\"Feb\",\"Mar\",\"Apr\",\"May\",\"Jun\",\"Jul\",\"Aug\",\"Sep\",\"Oct\",\"Nov\",\"Dec\"];class n{host;target;note;context={month:null,borough:null,scopeNote:\"Full published snapshot\"};constructor(t){this.host=t.host,this.target=t.element,this.target.classList.add(\"city-pulse-launcher\");const e=document.createElement(\"button\");e.type=\"button\",e.className=\"city-pulse-button\",e.setAttribute(\"aria-label\",\"Open City Pulse chat\"),e.title=\"Ask about NYC taxi data\";const s=document.createElement(\"span\");s.className=\"city-pulse-icon\",s.setAttribute(\"aria-hidden\",\"true\"),s.textContent=\"✦\";const i=document.createElement(\"span\");i.textContent=\"Ask City Pulse\",e.append(s,i),e.addEventListener(\"click\",()=>this.openChat()),this.note=document.createElement(\"span\"),this.note.className=\"city-pulse-launcher-note\",this.target.append(e,this.note)}update(t){this.host.eventService?.renderingStarted(t);try{this.context=function(t){const e=t.dataViews?.[0]?.table;if(!e)return{month:null,borough:null,scopeNote:\"Ask about the full published snapshot, or name a month or borough.\"};const s=e.columns.findIndex(t=>t.roles?.reportMonth),i=e.columns.findIndex(t=>t.roles?.reportBorough),n=t=>t<0?[]:[...new Set(e.rows.map(e=>String(e[t]??\"\").trim()).filter(Boolean))],o=n(s),h=n(i);let c=null;if(1===o.length){const t=o[0],e=/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\\s+(20\\d{2})$/i.exec(t);e?c=`${e[2]}-${String(a.findIndex(t=>t.toLowerCase()===e[1].toLowerCase())+1).padStart(2,\"0\")}`:/^20\\d{2}-(0[1-9]|1[0-2])$/.test(t)&&(c=t)}const r=1===h.length?h[0]:null,u=[];o.length>1&&u.push(\"More than one month is visible; name a month in your question for an exact match.\"),h.length>1&&u.push(\"More than one borough is visible; name a borough for an exact match.\"),1!==o.length||c||u.push(\"The report month could not be read; name it in your question.\");const d=[c,r].filter(Boolean).join(\" · \");return{month:c,borough:r,scopeNote:u.join(\" \")||(d?`Report context: ${d}`:\"Full published snapshot\")}}(t),this.host.eventService?.renderingFinished(t)}catch(e){this.host.eventService?.renderingFailed(t,String(e))}}getFormattingModel(){return{cards:[]}}openChat(){if(!this.host.hostCapabilities?.allowModalDialog)return void(this.note.textContent=\"Chat pop-ups are disabled in this Power BI environment.\");this.note.textContent=\"\";const t={...this.context};this.host.openModalDialog(i.H.id,{title:\"\",size:{width:560,height:530},actionButtons:[]},t).catch(()=>{this.note.textContent=\"Power BI could not open chat. Check custom-visual permissions.\"})}}}};const e={};function s(i){const a=e[i];if(void 0!==a)return a.exports;const n=e[i]={exports:{}};return t[i](n,n.exports,s),n.exports}s.d=(t,e)=>{if(Array.isArray(e))for(var i=0;i<e.length;){var a=e[i++],n=e[i++],o=0===n?{enumerable:!0,value:e[i++]}:{enumerable:!0,get:n};s.o(t,a)||Object.defineProperty(t,a,o)}else for(var a in e)s.o(e,a)&&!s.o(t,a)&&Object.defineProperty(t,a,{enumerable:!0,get:e[a]})},s.o=(t,e)=>Object.prototype.hasOwnProperty.call(t,e),s.r=t=>{Object.defineProperty(t,Symbol.toStringTag,{value:\"Module\"}),Object.defineProperty(t,\"__esModule\",{value:!0})};let i={};(()=>{s.r(i);var t=s(848),e=window.powerbi,a={name:\"cityPulseChat025EE4F52C524921A99C876C602C7504\",displayName:\"Ask City Pulse\",class:\"Visual\",apiVersion:\"5.11.0\",create:e=>{if(t.b)return new t.b(e);throw\"Visual instance not found\"},createModalDialog:(t,e,s)=>{const i=globalThis.dialogRegistry;t in i&&new i[t](e,s)},custom:!0};void 0!==e&&(e.visuals=e.visuals||{},e.visuals.plugins=e.visuals.plugins||{},e.visuals.plugins.cityPulseChat025EE4F52C524921A99C876C602C7504=a);const n=a;s.d(i,[\"default\",0,n])})(),cityPulseChat025EE4F52C524921A99C876C602C7504=i})();",
+    "css": ".city-pulse-launcher {\n  width: 100%;\n  height: 100%;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  overflow: hidden;\n  font-family: \"Segoe UI\", Arial, sans-serif;\n}\n.city-pulse-button {\n  width: 100%;\n  min-height: 46px;\n  border: 2px solid #efc954;\n  border-radius: 30px;\n  padding: 7px 16px;\n  color: #172033;\n  background: #efc954;\n  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);\n  font: 700 14px \"Segoe UI\", Arial, sans-serif;\n  letter-spacing: 0.01em;\n  cursor: pointer;\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  gap: 7px;\n}\n.city-pulse-button:hover,\n.city-pulse-button:focus-visible {\n  background: #ffe17e;\n  outline: 2px solid #fff;\n  outline-offset: 2px;\n}\n.city-pulse-icon {\n  font-size: 21px;\n  line-height: 1;\n}\n.city-pulse-launcher-note {\n  color: #9b2226;\n  font-size: 11px;\n  position: absolute;\n  top: 0;\n  right: 0;\n}\n.city-pulse-chat {\n  box-sizing: border-box;\n  position: fixed;\n  inset: 0;\n  width: 100vw;\n  height: 100vh;\n  overflow: hidden;\n  display: flex;\n  flex-direction: column;\n  color: #172033;\n  background: #f7f8f9;\n  font-family: \"Segoe UI\", Arial, sans-serif;\n}\n.city-pulse-chat * {\n  box-sizing: border-box;\n}\n.city-pulse-chat-header {\n  padding: 16px 22px 14px;\n  background: #172033;\n  border-top: 5px solid #efc954;\n  color: #fff;\n}\n.city-pulse-chat-kicker {\n  font-size: 10px;\n  font-weight: 700;\n  letter-spacing: 0.16em;\n  color: #efc954;\n}\n.city-pulse-chat-title {\n  font-size: 28px;\n  line-height: 1.15;\n  margin: 8px 0 3px;\n  font-weight: 750;\n}\n.city-pulse-chat-subtitle {\n  color: #d7dfeb;\n  font-size: 12px;\n  margin: 0;\n}\n.city-pulse-chat-scope {\n  padding: 10px 22px;\n  border-bottom: 1px solid #d7e0e8;\n  background: #fff9e4;\n  color: #526172;\n  font-size: 11px;\n}\n.city-pulse-chat-auth {\n  padding: 9px 18px;\n  background: #edf4f3;\n  border-bottom: 1px solid #c9dcda;\n}\n.city-pulse-chat-auth-label {\n  display: block;\n  color: #365f60;\n  font-size: 10px;\n  font-weight: 700;\n  letter-spacing: 0.05em;\n}\n.city-pulse-chat-auth-input {\n  display: block;\n  width: 100%;\n  margin-top: 5px;\n  padding: 7px 9px;\n  border: 1px solid #99bbbc;\n  border-radius: 8px;\n  background: #fff;\n  color: #172033;\n  font: 12px \"Segoe UI\", Arial, sans-serif;\n  letter-spacing: 0.04em;\n}\n.city-pulse-chat-auth-input:focus {\n  outline: 2px solid #407f80;\n}\n.city-pulse-chat-messages {\n  flex: 1;\n  min-height: 0;\n  overflow-y: auto;\n  padding: 20px 22px 12px;\n}\n.city-pulse-message {\n  max-width: 92%;\n  margin-bottom: 12px;\n}\n.city-pulse-message-user {\n  margin-left: auto;\n}\n.city-pulse-message-body {\n  padding: 11px 13px;\n  border-radius: 13px 13px 13px 3px;\n  background: #fff;\n  border: 1px solid #dce3eb;\n  font-size: 13px;\n  line-height: 1.45;\n  white-space: pre-wrap;\n}\n.city-pulse-message-user .city-pulse-message-body {\n  border-color: #407f80;\n  border-radius: 13px 13px 3px 13px;\n  background: #e9f5f3;\n}\n.city-pulse-chat-suggestions {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 7px;\n  padding: 10px 22px 14px;\n}\n.city-pulse-chat-chip {\n  border: 1px solid #b8ccd1;\n  border-radius: 20px;\n  padding: 6px 9px;\n  background: #fff;\n  color: #246368;\n  font: 600 10px \"Segoe UI\", Arial, sans-serif;\n  cursor: pointer;\n}\n.city-pulse-chat-chip:hover {\n  background: #e8f3f1;\n}\n.city-pulse-chat-form {\n  display: flex;\n  gap: 9px;\n  padding: 0 22px;\n}\n.city-pulse-chat-input {\n  flex: 1;\n  min-width: 0;\n  min-height: 44px;\n  border: 1px solid #aebac8;\n  border-radius: 10px;\n  padding: 11px 12px;\n  background: #fff;\n  font: 13px \"Segoe UI\", Arial, sans-serif;\n}\n.city-pulse-chat-input:focus {\n  outline: 2px solid #407f80;\n}\n.city-pulse-chat-send {\n  border: 0;\n  border-radius: 10px;\n  padding: 0 20px;\n  background: #efc954;\n  color: #172033;\n  font: 700 13px \"Segoe UI\", Arial, sans-serif;\n  cursor: pointer;\n}\n.city-pulse-chat-send:disabled {\n  opacity: 0.6;\n  cursor: progress;\n}\n.city-pulse-chat-status {\n  margin: 10px 22px 15px;\n  color: #637387;\n  font-size: 10px;\n}\n\n",
+    "iconBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAA2RpVFh0WE1MOmNvbS5hZG9iZS54bXAAAAAAADw/eHBhY2tldCBiZWdpbj0i77u/IiBpZD0iVzVNME1wQ2VoaUh6cmVTek5UY3prYzlkIj8+IDx4OnhtcG1ldGEgeG1sbnM6eD0iYWRvYmU6bnM6bWV0YS8iIHg6eG1wdGs9IkFkb2JlIFhNUCBDb3JlIDUuMC1jMDYwIDYxLjEzNDc3NywgMjAxMC8wMi8xMi0xNzozMjowMCAgICAgICAgIj4gPHJkZjpSREYgeG1sbnM6cmRmPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5LzAyLzIyLXJkZi1zeW50YXgtbnMjIj4gPHJkZjpEZXNjcmlwdGlvbiByZGY6YWJvdXQ9IiIgeG1sbnM6eG1wTU09Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9tbS8iIHhtbG5zOnN0UmVmPSJodHRwOi8vbnMuYWRvYmUuY29tL3hhcC8xLjAvc1R5cGUvUmVzb3VyY2VSZWYjIiB4bWxuczp4bXA9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC8iIHhtcE1NOk9yaWdpbmFsRG9jdW1lbnRJRD0ieG1wLmRpZDpBOEJGMzkxN0NBRDNFMDExQTcxQ0JFODI3ODBCQUE5RSIgeG1wTU06RG9jdW1lbnRJRD0ieG1wLmRpZDo3NEY1QjA1NUQ0OTAxMUUwQTgxREI2NjMxMkNEMUNEMyIgeG1wTU06SW5zdGFuY2VJRD0ieG1wLmlpZDo3NEY1QjA1NEQ0OTAxMUUwQTgxREI2NjMxMkNEMUNEMyIgeG1wOkNyZWF0b3JUb29sPSJBZG9iZSBQaG90b3Nob3AgQ1M1IFdpbmRvd3MiPiA8eG1wTU06RGVyaXZlZEZyb20gc3RSZWY6aW5zdGFuY2VJRD0ieG1wLmlpZDo5Mjk5RDU1ODBGRDRFMDExQTcxQ0JFODI3ODBCQUE5RSIgc3RSZWY6ZG9jdW1lbnRJRD0ieG1wLmRpZDpBOEJGMzkxN0NBRDNFMDExQTcxQ0JFODI3ODBCQUE5RSIvPiA8L3JkZjpEZXNjcmlwdGlvbj4gPC9yZGY6UkRGPiA8L3g6eG1wbWV0YT4gPD94cGFja2V0IGVuZD0iciI/PpDoNX0AAAI3SURBVHjarJRLSFVRFIY9t7SiRDGLoEEPCRJRaCSYkxCiFCXCF+LIMExQLkilgumgwkbdBuWDRC2EomhURCOjgagkXEgKLUKhidobM6H0+i34rxyPnuvEA5/rXPda/1l7739vJxKJxG3ls93+hEKhTILxJhgMftmsiPxdhHw4CfepeR8dCyjWwwB0kZy3iVgCoQ2ewnmXxhrBD7Cgr/ZQVA17fDRPw2UYhzK6G99IsBse6/0QNME+H8FT4EA/YiPqOgA1q4IMzBNuw6iKjkCpj+Av+AdnEEmD3bxfhzvuDk30HaEaLsEkXCO53rN+Bwg5qsvTuj/TjGYtx9nINhRmEx7AYWiFW7AXOuEcbPOUvIZ2mnrl+PkQUbNEh4QHNKUSDdsSBWEOlmxTEfvs26FL9Khe211if6Acgee+xo7xzMgBxfq9qPe3fgWBGN2lEnqtG9nExM7CV3jp3bDos2bKJB0nHFRxAxRpA/5CIXyHh5ABv6GZqd9dJ6iz2SjbxMMypGhJFtTlNzu3kK7xgDxpove8U66FK2A+s6nul5gVVMEL+Ak7lG/T+g9JcIOGar2CRUoogxMwpP/bLTJMB9bRhDbkk5bBUU0y3ES0xS04CBfN9RSHiY90vJK0BHaSzG9h2eejS3RJeVfdtrGzuGyd8CX7Yq6ExuCH63jaVMPkFOv6OibB6DKs2+VEQp+WYBoqERn2sVWWRNN0YurIfeL14U6YkpkLYCSG6e0yqdCxvKBLIm5FgAEAV0nKuwMYRUsAAAAASUVORK5CYII="
+  },
+  "visualEntryPoint": "",
+  "externalJS": [],
+  "assets": {
+    "icon": "assets/icon.png"
+  }
+}

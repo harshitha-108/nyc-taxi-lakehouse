@@ -1,0 +1,29 @@
+{
+  "version": "1.0.0.9",
+  "author": {
+    "name": "NYC Taxi Lakehouse",
+    "email": "harshitha-108@users.noreply.github.com"
+  },
+  "resources": [
+    {
+      "resourceId": "rId0",
+      "sourceType": 5,
+      "file": "resources/cityPulseChat025EE4F52C524921A99C876C602C7504.pbiviz.json"
+    }
+  ],
+  "visual": {
+    "name": "cityPulseChat",
+    "displayName": "Ask City Pulse",
+    "guid": "cityPulseChat025EE4F52C524921A99C876C602C7504",
+    "visualClassName": "Visual",
+    "version": "1.0.0.9",
+    "description": "Local, evidence-grounded NYC taxi report chat",
+    "supportUrl": "https://github.com/harshitha-108/nyc-taxi-lakehouse",
+    "gitHubUrl": "https://github.com/harshitha-108/nyc-taxi-lakehouse"
+  },
+  "metadata": {
+    "pbivizjson": {
+      "resourceId": "rId0"
+    }
+  }
+}

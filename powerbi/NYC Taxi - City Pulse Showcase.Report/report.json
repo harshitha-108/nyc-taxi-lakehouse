@@ -7,6 +7,20 @@
         "disabled": false,
         "items": [
           {
+            "name": "cityPulseChat025EE4F52C524921A99C876C602C7504.pbiviz.json",
+            "path": "cityPulseChat025EE4F52C524921A99C876C602C7504.pbiviz.json",
+            "type": 5
+          }
+        ],
+        "name": "cityPulseChat025EE4F52C524921A99C876C602C7504",
+        "type": 0
+      }
+    },
+    {
+      "resourcePackage": {
+        "disabled": false,
+        "items": [
+          {
             "name": "CY24SU10",
             "path": "BaseThemes/CY24SU10.json",
             "type": 202
@@ -239,7 +253,16 @@
           "z": 24000.00
         },
         {
-          "config": "{\"name\":\"e05b43ac8c2af7de0a03\",\"layouts\":[{\"id\":0,\"position\":{\"x\":48,\"y\":663,\"z\":6000,\"width\":1030,\"height\":45,\"tabOrder\":16000}}],\"singleVisual\":{\"visualType\":\"textbox\",\"drillFilterOtherVisuals\":true,\"objects\":{\"general\":[{\"properties\":{\"paragraphs\":[{\"textRuns\":[{\"value\":\"Trip-date trend shows Jan–Jun 2024; KPI totals include all rows in those source months.\",\"textStyle\":{\"fontSize\":\"10pt\",\"color\":\"#9CB3BF\",\"fontWeight\":\"normal\"}}]}]}}]},\"vcObjects\":{\"background\":[{\"properties\":{\"show\":{\"expr\":{\"Literal\":{\"Value\":\"false\"}}}}}]}}}",
+          "config": "{\"name\":\"cf2ff496c8e0759cf869\",\"layouts\":[{\"id\":0,\"position\":{\"x\":970,\"y\":660,\"width\":220,\"height\":60,\"z\":26000,\"tabOrder\":26000}}],\"singleVisual\":{\"visualType\":\"cityPulseChat025EE4F52C524921A99C876C602C7504\",\"projections\":{\"reportMonth\":[{\"queryRef\":\"MonthPeriod.Month Label\"}]},\"prototypeQuery\":{\"Version\":2,\"From\":[{\"Name\":\"m\",\"Entity\":\"MonthPeriod\",\"Type\":0}],\"Select\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"m\"}},\"Property\":\"Month Label\"},\"Name\":\"MonthPeriod.Month Label\",\"NativeReferenceName\":\"Month Label\"}]},\"drillFilterOtherVisuals\":true,\"vcObjects\":{\"title\":[{\"properties\":{\"show\":{\"expr\":{\"Literal\":{\"Value\":\"false\"}}}}}],\"background\":[{\"properties\":{\"show\":{\"expr\":{\"Literal\":{\"Value\":\"false\"}}}}}]}}}",
+          "filters": "[]",
+          "height": 60.00,
+          "width": 220.00,
+          "x": 970.00,
+          "y": 660.00,
+          "z": 26000.00
+        },
+        {
+          "config": "{\"name\":\"e05b43ac8c2af7de0a03\",\"layouts\":[{\"id\":0,\"position\":{\"x\":48,\"y\":663,\"z\":6000,\"width\":1030,\"height\":45,\"tabOrder\":16000}}],\"singleVisual\":{\"visualType\":\"textbox\",\"drillFilterOtherVisuals\":true,\"objects\":{\"general\":[{\"properties\":{\"paragraphs\":[{\"textRuns\":[{\"value\":\"Trip-date trend shows Jan–Jun 2024; KPI totals include all rows in those source months.\",\"textStyle\":{\"fontSize\":\"10pt\",\"color\":\"#9cb3bf\"}}]}]}}]},\"vcObjects\":{\"background\":[{\"properties\":{\"show\":{\"expr\":{\"Literal\":{\"Value\":\"false\"}}}}}]}}}",
           "filters": "[]",
           "height": 45.00,
           "width": 1030.00,

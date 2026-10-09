@@ -29,7 +29,7 @@ jobs:
         run: python -m pip install ruff==0.9.10 PyYAML==6.0.2
       - name: Lint, workflow syntax, and shell syntax
         run: |
-          ruff check src tests airflow scripts
+          ruff check src tests airflow scripts chatbot
           python - <<'PY'
           from pathlib import Path
           import yaml

@@ -21,7 +21,7 @@ markers = [
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-src = ["src", "tests"]
+src = ["src", "tests", "chatbot"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
