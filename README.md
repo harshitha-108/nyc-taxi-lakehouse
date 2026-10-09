@@ -68,17 +68,21 @@ Gold Parquet is the source for the five PostgreSQL serving marts; a separate, co
 
 ### Power BI — City Pulse
 
-The separate, three-page [Power BI Desktop project](powerbi/NYC%20Taxi%20-%20City%20Pulse%20Showcase.pbip) presents the same local mobility data through an overview, pickup geography, and fares/payments. It includes month filtering, KPI insights, demand trends, a pickup-zone map, and a payment-method donut. This is an editable `.pbip` project, not a deployed Power BI service report.
+The separate, three-page [Power BI Desktop project](powerbi/NYC%20Taxi%20-%20City%20Pulse%20Showcase.pbip) presents the same local mobility data through an overview, pickup geography, and fares/payments. It includes month filtering, KPI insights, demand trends, a pickup-zone map, and a payment-method donut. This is an editable `.pbip` project, not a deployed Power BI service report. Page 1 also has an **Ask City Pulse** button that opens a local, in-report data chat.
 
-City Pulse — overview and demand:
+Page 1 — overview and demand, with the Ask City Pulse button at the bottom right:
 
-![Power BI City Pulse overview and demand](docs/images/powerbi-city-pulse-overview.png)
+![Power BI City Pulse overview with Ask City Pulse button](docs/images/powerbi-city-pulse-overview.png)
 
-Boroughs & Zones — pickup geography:
+Page 1 — chat popup opened from that button. In this January–June 2024 snapshot, it answers a question about June cash payments; asking does not change the report's charts or filters:
+
+![Ask City Pulse in-report chat answering a June cash-share question](docs/images/powerbi-city-pulse-chat.png)
+
+Page 2 — Boroughs & Zones, pickup geography:
 
 ![Power BI boroughs and pickup zones](docs/images/powerbi-city-pulse-geography.png)
 
-Fare & Payment — trip amounts and payment mix:
+Page 3 — Fare & Payment, trip amounts and payment mix:
 
 ![Power BI fares and payment methods](docs/images/powerbi-city-pulse-fares.png)
 

@@ -2,7 +2,7 @@
 
 The [City Pulse Showcase project](NYC%20Taxi%20-%20City%20Pulse%20Showcase.pbip) is the portable, three-page Power BI Desktop source. Keep the `.pbip`, `.Report`, and `.SemanticModel` items together: the project and report definitions use relative references between these siblings. On Windows, open it through [Open City Pulse.cmd](Open%20City%20Pulse.cmd). The launcher makes a separate, Git-ignored working copy under `powerbi/.local/p/`, sets its CSV path for your PC, and opens that copy. It never overwrites an existing working report or its imported-data cache.
 
-The report uses four aggregated PostgreSQL serving marts exported as local CSVs: `daily_trip_metrics`, `hourly_demand`, `payment_type_summary`, and `pickup_zone_performance`. The export also includes `takeaway_breakdown.csv` for the local chat assistant's borough-scoped hour and payment answers. It does not contain the underlying trip-level TLC files. The three page screenshots in the root README show the locally loaded January–June 2024 snapshot; values can change after a refresh with different data.
+The report uses four aggregated PostgreSQL serving marts exported as local CSVs: `daily_trip_metrics`, `hourly_demand`, `payment_type_summary`, and `pickup_zone_performance`. The export also includes `takeaway_breakdown.csv` for the local chat assistant's borough-scoped hour and payment answers. It does not contain the underlying trip-level TLC files. The three page screenshots and chat example in the root README show the locally loaded January–June 2024 snapshot; values can change after a refresh with different data.
 
 ## Open and refresh locally
 
