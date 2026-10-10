@@ -14,9 +14,9 @@ from scripts import open_powerbi_chat as launcher
 
 class LocalPowerBIProjectTests(unittest.TestCase):
     def setUp(self) -> None:
-        scratch = Path(__file__).resolve().parents[2] / "data" / "state"
-        scratch.mkdir(parents=True, exist_ok=True)
-        temporary = tempfile.TemporaryDirectory(dir=scratch)
+        # A synced checkout (for example OneDrive) can lock the staged directory
+        # between copytree and rename. Test the local launcher in an ordinary temp dir.
+        temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name) / "repo"
         powerbi = root / "powerbi"

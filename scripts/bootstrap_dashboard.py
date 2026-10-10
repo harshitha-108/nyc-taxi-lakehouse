@@ -344,6 +344,7 @@ def weighted_average(column: str, label: str) -> dict[str, object]:
 def chart_specs() -> tuple[ChartSpec, ...]:
     """Use Gold metrics directly; weight monthly average-of-averages by trip count."""
     no_time = {"time_range": "No filter", "row_limit": 1000}
+    zone_trips = metric("trip_count", "Zone Pickups")
     return (
         ChartSpec("Total Valid Trips", "daily_trip_metrics", "big_number_total",
                   {**no_time, "metric": metric("trip_count", "Trips"),
@@ -390,15 +391,15 @@ def chart_specs() -> tuple[ChartSpec, ...]:
                    "y_axis_title": "Trips", "y_axis_title_margin": 35,
                    "y_axis_format": ".3s", "rich_tooltip": True,
                    "metrics": [metric("trip_count", "Borough Pickups")]}),
-        ChartSpec("Top Pickup Zones", "pickup_zone_performance",
-                  "echarts_timeseries_bar",
-                  {**no_time, "x_axis": "zone", "groupby": [], "row_limit": 10,
-                   "order_desc": True, "orientation": "horizontal",
-                   "x_axis_sort": "Zone Pickups", "x_axis_sort_asc": True,
-                   "y_axis_title": "Trips", "y_axis_title_margin": 35,
-                   "y_axis_format": ".3s", "rich_tooltip": True,
-                   "metrics": [metric("trip_count", "Zone Pickups")],
-                   "show_legend": False}),
+        # Keep all zone aggregates in the query so Superset does not flag a
+        # truncated result; the ranked, in-cell-bar table displays ten per page.
+        ChartSpec("Top Pickup Zones", "pickup_zone_performance", "table",
+                  {**no_time, "query_mode": "aggregate", "groupby": ["zone"],
+                   "metrics": [zone_trips], "timeseries_limit_metric": zone_trips,
+                   "order_desc": True, "orderby": [[zone_trips, False]],
+                   "page_length": 10, "server_pagination": False,
+                   "show_cell_bars": True, "color_pn": False,
+                   "include_search": False}),
         ChartSpec("Payment Type Trips", "payment_type_summary",
                   "pie",
                   {**no_time, "groupby": [{"expressionType": "SQL",

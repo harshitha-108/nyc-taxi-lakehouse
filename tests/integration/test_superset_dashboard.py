@@ -3,9 +3,13 @@
 import json
 import os
 
+import psycopg2
 import pytest
+from psycopg2 import sql
 from scripts.bootstrap_dashboard import SupersetClient, chart_specs, metric, query_context
 from scripts.smoke_dashboard import smoke
+
+from nyc_taxi_lakehouse.serving.config import ServingConfig
 
 pytestmark = [pytest.mark.integration, pytest.mark.docker, pytest.mark.heavy]
 
@@ -75,3 +79,44 @@ def test_takeaways_respond_to_month_and_borough_filters() -> None:
     assert rows("Insight Top Borough", 1, "Queens")[0]["borough"] == "Queens"
     assert rows("Insight Busiest Hour", 1, "Queens")[0]["Pickup hour"]
     assert rows("Insight Top Payment", 1, "Queens")[0]["Payment method"] == "Credit card"
+
+
+@pytest.mark.skipif(os.environ.get("RUN_SUPERSET_INTEGRATION") != "1",
+                    reason="Set RUN_SUPERSET_INTEGRATION=1 with Superset running.")
+def test_top_pickup_zones_ranks_filtered_complete_aggregate() -> None:
+    """The first ten table rows match the serving mart, without a SQL row-limit hit."""
+    client = SupersetClient(os.environ.get("SUPERSET_URL", "http://superset:8088"))
+    dataset = next(item for item in client.listed("dataset")
+                   if item["table_name"] == "pickup_zone_performance")
+    spec = next(spec for spec in chart_specs() if spec.name == "Top Pickup Zones")
+    context = json.loads(query_context(dataset["id"], spec.params))
+    assert context["queries"][0]["row_limit"] == 1000
+
+    config = ServingConfig.from_env()
+    with psycopg2.connect(**config.connect_kwargs()) as connection:
+        with connection.cursor() as cursor:
+            for month, borough in ((1, "Queens"), (6, "Manhattan")):
+                context["queries"][0]["filters"] = [
+                    {"col": "_source_month", "op": "IN", "val": [month]},
+                    {"col": "borough", "op": "IN", "val": [borough]},
+                ]
+                result = client.request("POST", "/api/v1/chart/data", context)[
+                    "result"][0]
+                rows = result["data"]
+                assert 10 < result["rowcount"] < 1000
+                assert len(rows) == result["rowcount"]
+                assert all(row["zone"] is not None for row in rows[:10])
+                values = [row["Zone Pickups"] for row in rows]
+                assert values == sorted(values, reverse=True)
+
+                cursor.execute(sql.SQL(
+                    "SELECT zone, SUM(trip_count) AS trips "
+                    "FROM {}.pickup_zone_performance "
+                    "WHERE _source_month = %s AND borough = %s "
+                    "GROUP BY zone ORDER BY trips DESC"
+                ).format(sql.Identifier(config.schema)), (month, borough))
+                expected = cursor.fetchall()
+                assert values[:10] == [trips for _, trips in expected[:10]]
+                expected_by_zone = {zone: trips for zone, trips in expected}
+                assert all(row["Zone Pickups"] == expected_by_zone[row["zone"]]
+                           for row in rows[:10])

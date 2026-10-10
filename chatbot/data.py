@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import os
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,18 @@ TABLES = frozenset({
 })
 BOROUGH_TABLES = frozenset({"pickup_zone_performance", "takeaway_breakdown"})
 DEFAULT_CSV_DIR = Path(__file__).resolve().parents[1] / "data" / "gold" / "powerbi"
+COMMON_COLUMNS = frozenset({"_source_taxi_type", "_source_year", "_source_month", "trip_count"})
+MART_COLUMNS = {
+    "daily_trip_metrics": frozenset({"pickup_date", "total_revenue", "total_tip_amount"}),
+    "hourly_demand": frozenset({"pickup_hour", "total_revenue"}),
+    "payment_type_summary": frozenset({"payment_type", "total_revenue", "total_tip_amount"}),
+    "pickup_zone_performance": frozenset({"borough", "zone", "total_revenue",
+                                           "total_tip_amount"}),
+    "takeaway_breakdown": frozenset({"borough", "pickup_hour", "payment_type"}),
+}
+DECIMAL_COLUMNS = frozenset({"total_revenue", "total_tip_amount"})
+INTEGER_COLUMNS = frozenset({"_source_year", "_source_month", "trip_count",
+                             "pickup_hour", "payment_type"})
 
 
 class SourceError(RuntimeError):
@@ -53,21 +66,39 @@ class CsvSource:
         try:
             with path.open(encoding="utf-8-sig", newline="") as stream:
                 reader = csv.DictReader(stream)
-                required = {"_source_taxi_type", "_source_year", "_source_month", "trip_count"}
-                if borough:
-                    required.add("borough")
-                if not reader.fieldnames or not required.issubset(reader.fieldnames):
+                required = COMMON_COLUMNS | MART_COLUMNS[table]
+                if (not reader.fieldnames or len(reader.fieldnames) != len(set(reader.fieldnames))
+                        or not required.issubset(reader.fieldnames)):
                     raise SourceError(f"{table}.csv is not a published serving mart export")
-                return [
-                    row for row in reader
-                    if row["_source_taxi_type"] == "yellow"
-                    and (period is None or (
-                        (period[0] is None or int(row["_source_year"]) == period[0])
-                        and int(row["_source_month"]) == period[1]
-                    ))
-                    and (not borough_labels or row["borough"].casefold() in borough_labels)
-                ]
-        except (OSError, UnicodeError, csv.Error, ValueError, KeyError) as exc:
+                rows = []
+                for row in reader:
+                    if None in row or any(row[column] is None for column in required):
+                        raise SourceError(f"{table}.csv contains an incomplete row")
+                    for column in required & INTEGER_COLUMNS:
+                        int(row[column])
+                    if (not 1 <= int(row["_source_month"]) <= 12
+                            or int(row["trip_count"]) < 0
+                            or ("pickup_hour" in required
+                                and not 0 <= int(row["pickup_hour"]) <= 23)):
+                        raise SourceError(f"{table}.csv contains an invalid period, hour, or count")
+                    for column in required & DECIMAL_COLUMNS:
+                        value = row[column]
+                        if value:
+                            if not Decimal(value).is_finite():
+                                raise SourceError(f"{table}.csv contains a non-finite value")
+                    if row["_source_taxi_type"] != "yellow":
+                        continue
+                    if period is not None and (
+                        (period[0] is not None and int(row["_source_year"]) != period[0])
+                        or int(row["_source_month"]) != period[1]
+                    ):
+                        continue
+                    if borough_labels and row["borough"].casefold() not in borough_labels:
+                        continue
+                    rows.append(row)
+                return rows
+        except (OSError, UnicodeError, csv.Error, ValueError, KeyError,
+                InvalidOperation, OverflowError) as exc:
             raise SourceError(
                 f"Could not read {table}.csv from the Power BI export folder"
             ) from exc
@@ -79,8 +110,15 @@ class CsvSource:
         missing = sorted(
             table for table in TABLES if not (self.directory / f"{table}.csv").is_file()
         )
-        return {"status": "ready" if not missing else "missing_exports", "source": "csv",
-                "missing_exports": missing}
+        invalid = []
+        for table in sorted(TABLES - set(missing)):
+            try:
+                self.fetch(table)
+            except SourceError:
+                invalid.append(f"{table} (invalid or unreadable)")
+        unavailable = missing + invalid
+        return {"status": "ready" if not unavailable else "missing_exports", "source": "csv",
+                "missing_exports": unavailable}
 
 
 class PostgresSource:

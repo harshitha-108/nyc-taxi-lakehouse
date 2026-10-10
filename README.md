@@ -10,7 +10,7 @@ A local batch lakehouse for official [NYC TLC Yellow Taxi trips](https://www.nyc
 | Data contracts and quality | Metadata-only source schema gate before Bronze; row-level Silver rules and quarantine after Bronze |
 | Lakehouse storage | Local Parquet by default; optional period-scoped Iceberg snapshots in MinIO |
 | Operational reliability | Safe partial downloads and partition promotion, task failure propagation, reconciliation, transactional serving publication |
-| Analytics | Five Gold marts, PostgreSQL serving, ten-chart Superset dashboard |
+| Analytics | Five Gold marts, PostgreSQL serving, 13-chart Superset dashboard |
 | Validation | Local 155-test full regression, four GitHub Actions CI jobs, measured performance experiments |
 
 ## Architecture
@@ -64,7 +64,7 @@ Operational checks cover download interruption, breaking schema, local partition
 
 ## Analytics and dashboard
 
-Gold Parquet is the source for the five PostgreSQL serving marts; a separate, compact Silver-derived breakdown powers filter-responsive takeaways. Superset queries PostgreSQL, not trip-level Raw or Silver. The `NYC Urban Mobility Overview` dashboard has 13 saved charts: four KPIs, three insight cards, and paired daily demand/borough, hourly demand/top-zone, and daily amount/payment views. Its native month and scoped borough filters, light theme, layout, and styling are reproducible through an idempotent REST bootstrap. The two daily trends display pickup dates in January–June 2024 so source-date outliers do not flatten the time axis; this display window does not alter the stored marts or KPI totals. All 13 chart-data calls returned data in the local smoke check, and a signed-in browser check showed the dashboard; “Top Pickup Zones” displayed a non-fatal row-limit warning. Example analytical queries are in [serving_examples.sql](sql/serving_examples.sql). There is no claim of real-time analytics.
+Gold Parquet is the source for the five PostgreSQL serving marts; a separate, compact Silver-derived breakdown powers filter-responsive takeaways. Superset queries PostgreSQL, not trip-level Raw or Silver. The `NYC Urban Mobility Overview` dashboard has 13 saved charts: four KPIs, three insight cards, and paired daily demand/borough, hourly demand/top-zone, and daily amount/payment views. Its native month and scoped borough filters, light theme, layout, and styling are reproducible through an idempotent REST bootstrap. The two daily trends display pickup dates in January–June 2024 so source-date outliers do not flatten the time axis; this display window does not alter the stored marts or KPI totals. Top Pickup Zones fetches the complete ranked zone aggregate and displays a ten-row first page with in-cell bars, avoiding the old SQL row-limit warning. All 13 chart-data calls and filtered zone-ranking checks passed against the local services; browser visual regression remains manual. Example analytical queries are in [serving_examples.sql](sql/serving_examples.sql). There is no claim of real-time analytics.
 
 ### Power BI — City Pulse
 
@@ -102,10 +102,11 @@ The complete local Docker regression passed **155 tests** after the Phase 14 cha
 | --- | --- |
 | Quality | Ruff, workflow YAML, Bash syntax, Compose configuration, Git hygiene and whitespace |
 | Fast Tests | Service-independent unit/contract/dashboard-definition tests on Python 3.11 and Java 17 |
+| Power BI Visual | Installs locked visual dependencies, then typechecks and lints the custom chat visual |
 | Docker Build | Builds the pipeline image; does not publish it |
 | Integration Tests | Fresh MinIO/PostgreSQL, real Airflow DAG, Iceberg and serving tests without historical TLC data |
 
-CI is **validation, not deployment**. Full-data benchmarks, two heavy tests, Superset bootstrap, and browser visual checks are local/manual rather than PR gates. The [latest completed CI evidence before this documentation update](https://github.com/harshitha-108/nyc-taxi-lakehouse/actions/runs/35905605539) passed all four jobs.
+CI is **validation, not deployment**. Full-data benchmarks, two heavy tests, Superset bootstrap, and browser visual checks are local/manual rather than PR gates. The [latest completed CI evidence before this documentation update](https://github.com/harshitha-108/nyc-taxi-lakehouse/actions/runs/35905605539) passed the previous four-job workflow; the new Power BI Visual job has not run remotely for these unpushed changes. The [current local issue-validation record](docs/phase1-validation-2026-10-10.md) separates checks run here from historical CI results.
 
 ## Run locally
 
@@ -119,11 +120,12 @@ Set-Location nyc-taxi-lakehouse
 Copy-Item .env.example .env
 docker compose build pipeline
 docker compose run --rm --no-deps pipeline python --version
-docker compose run --rm --no-deps pipeline pytest -p no:cacheprovider -m "not docker and not heavy" -q
+docker compose run --rm --no-deps pipeline pytest -p no:cacheprovider -m "not docker and not heavy" -k "not hygiene_checks_git_index_instead_of_local_powerbi_copy" -q
 docker compose run --rm --no-deps pipeline ruff check src tests airflow scripts
+python scripts/check_repository_hygiene.py
 ```
 
-This validates installed dependencies and runs synthetic/local-data tests without MinIO, PostgreSQL, Airflow state, Superset state, or historical TLC files. It is a **quick code/environment check**, not a claim that the six-month data pipeline ran on a fresh clone.
+This validates installed dependencies and runs synthetic/local-data tests without MinIO, PostgreSQL, Airflow state, Superset state, or historical TLC files. The lean pipeline image lacks Git, so its Git-index hygiene test is excluded in that container; the host hygiene check requires Git and Python. Hosted Fast Tests retain the unmodified Git-index test. This is a **quick code/environment check**, not a claim that the six-month data pipeline ran on a fresh clone.
 
 ### One real source month — downloads and transforms millions of trips
 
@@ -160,7 +162,7 @@ powerbi/                   Editable Power BI project and local refresh instructi
 sql/                       Read-only serving query examples
 tests/unit/                Deterministic unit and contract tests
 tests/integration/         Spark, service and failure-recovery tests
-.github/workflows/         Four-job CI workflow
+.github/workflows/         Five-job CI workflow, including Power BI visual checks
 data/                      Ignored runtime layers and state; only .gitkeep files tracked
 docs/                      Technical development history
 ```
@@ -171,6 +173,6 @@ docs/                      Technical development history
 
 ## Limitations and production mapping
 
-This is a local single-machine demonstration, **not** a hardened or managed-cloud deployment. The SQLite Iceberg JDBC catalog is single-writer; Iceberg commits are per table, whereas PostgreSQL serving publication is transactional across five Gold marts per period. The takeaway breakdown is published in a separate transaction: if that step fails, retry the serving stage before relying on the insight cards. The pinned community MinIO image and development credentials are for loopback-only use. Airflow's paused schedule must account for TLC release lag. Superset's local setup lacks production rate limiting/CSP; the zone chart has a row-limit warning and browser visual regression is manual. Full historical data and performance runs are excluded from CI, and the measured Gold improvement does not establish performance at larger scale.
+This is a local single-machine demonstration, **not** a hardened or managed-cloud deployment. The SQLite Iceberg JDBC catalog is single-writer; Iceberg commits are per table, whereas PostgreSQL serving publication is transactional across five Gold marts per period. The takeaway breakdown is published in a separate transaction: if that step fails, retry the serving stage before relying on the insight cards. The pinned community MinIO image and development credentials are for loopback-only use. Airflow's paused schedule must account for TLC release lag. Superset's local setup lacks production rate limiting/CSP, and browser visual regression is manual. Full historical data and performance runs are excluded from CI, and the measured Gold improvement does not establish performance at larger scale.
 
 If deployed elsewhere, MinIO could map to S3/ADLS, local Spark to managed Spark, local Airflow to managed Airflow, and local PostgreSQL/Superset to appropriate managed serving/BI services. Those are **reference mappings**, not services used by this repository. Kafka, CDC, and dbt are not implemented.

@@ -1,8 +1,14 @@
 # NYC Taxi Lakehouse — Project Status
 
-## Current Phase
+## Current Checkpoint
 
-Phase 14 — Performance Engineering, Query Optimization & Benchmarking (PASS)
+The Phase 1–14 batch-pipeline milestones are complete. Subsequent work added a 13-chart Superset
+dashboard, a three-page Power BI Desktop report, aggregate CSV exports, and a local Ask City Pulse
+chat visual/API. The latter features are local development artifacts, not a deployed BI or AI service.
+The historical validation records below describe the runs performed at each milestone; they are not
+claims that every later feature passed the old Phase 14 test run. The current issue-validation gate,
+including environment-dependent checks and the corrected public GitHub About description, is in
+[`docs/phase1-validation-2026-10-10.md`](docs/phase1-validation-2026-10-10.md).
 
 ## Completed
 
@@ -57,7 +63,8 @@ Phase 14 — Performance Engineering, Query Optimization & Benchmarking (PASS)
 - One-transaction-per-period five-mart replacement with value, count, and revenue reconciliation
 - Real isolated PostgreSQL idempotency, unrelated-month, and rollback tests
 - Airflow `publish_serving` task with filesystem/Iceberg compatibility and final serving reconciliation
-- Pinned Superset 6.0.0 local dashboard, REST bootstrap, and ten saved PostgreSQL-backed charts
+- Pinned Superset 6.0.0 local dashboard, REST bootstrap, and ten PostgreSQL-backed charts at the
+  Phase 11 checkpoint; the current bootstrap defines 13 charts over six datasets
 - Read-only six-month serving reconciliation and reusable SQL examples
 - Fail-closed schema-contract checks, isolated stage failure/replay tests, and compact period-level
   reconciliation across local Parquet, Iceberg, and PostgreSQL serving
@@ -65,12 +72,17 @@ Phase 14 — Performance Engineering, Query Optimization & Benchmarking (PASS)
 - Airflow task-state failure matrix and dashboard definition preflight/regression tests
 - GitHub Actions `CI` workflow with separate Quality, Fast Tests, Integration Tests, and Docker Build
   jobs; push-to-main and pull-request triggers, branch/PR concurrency, and read-only permissions
+- Added Power BI Visual CI job for locked-dependency TypeScript typecheck and ESLint; it has passed
+  locally but has not yet run on GitHub for these unpushed changes
 - Explicit pytest `integration`, `docker`, and `heavy` markers, plus a tracked-file hygiene guard
 - Fresh-run CI service configuration, MinIO/PostgreSQL health-gated integration, and failure diagnostics
 - Reproducible local January 2024 performance harness with Spark plan, shuffle, file-layout,
   Iceberg scan, and PostgreSQL EXPLAIN experiments
 - One adopted production change: Gold no longer persists its full Silver input; isolated downstream,
   read-only historical reconciliation, and reliability regression passed
+- Filter-responsive Superset takeaway cards backed by a separate `takeaway_breakdown` publication
+- Three-page editable Power BI Desktop project, aggregate CSV export path, and local Ask City Pulse
+  chat visual backed by a loopback, read-only aggregate-data API
 
 ## Current Architecture
 
@@ -89,12 +101,20 @@ and final reconciliation. Airflow uses PostgreSQL for orchestration state and le
 state files intact. Phase 11 adds a separate PostgreSQL analytics database containing only compact
 Gold-derived marts, plus a third PostgreSQL database for Superset metadata. The serving publisher
 reads the validated local Gold Parquet path in both filesystem and Iceberg modes, with one five-table
-transaction per source period. Superset queries serving tables only. dbt is not implemented.
+transaction per source period. The `takeaway_breakdown` publication for filter-responsive Superset
+insights is a separate transaction; a failure there requires retry before trusting those cards.
+Superset queries serving tables only. Its current bootstrap defines 13 saved charts across five
+Gold-derived serving datasets plus the takeaway dataset. Power BI imports local aggregate CSV
+exports into a three-page Desktop report; it is not a Power BI Service deployment. The report's
+Ask City Pulse visual calls a loopback-only API that answers from read-only published aggregates.
+Optional local Ollama helps interpret wording; deterministic code calculates the numeric answer.
+The normal launcher uses code-free CSV mode, which is appropriate only for this public dataset.
+dbt is not implemented.
 GitHub Actions now checks the repository and image build on every main push and pull request. Its
 integration job starts fresh MinIO/PostgreSQL services without launching Airflow scheduler/webserver
 or Superset; no historical NYC data is used. There is no production deployment target or CD job.
-Phase 14 changes only the Gold processor's Silver-input caching behavior. The five marts, period
-layout, Iceberg publication path, serving schema, and Airflow control plane are unchanged.
+Phase 14 changed only the Gold processor's Silver-input caching behavior. The five marts, period
+layout, Iceberg publication path, serving schema, and Airflow control plane remained unchanged.
 
 ## Environment
 
@@ -441,10 +461,12 @@ filesystem mode; Iceberg and serving remain independently validated paths. The S
 local-only: it uses in-memory rate limiting and has no Content Security Policy, which Superset warns
 about on startup. The dashboard has source-month and scoped pickup-borough filters but no arbitrary
 date-range filter across all marts. The REST smoke verifies saved layout and all chart queries; a
-  automated browser-based visual-regression test or screenshot was not committed. A signed-in local
-  browser inspection in Phase 12 showed all ten charts, with a row-limit warning on Top Pickup
-  Zones. No formal database-vs-lakehouse
-performance comparison was attempted.
+  automated browser-based visual-regression test was not committed. A signed-in local browser
+  inspection in Phase 12 showed the then-current ten charts and a Top Pickup Zones row-limit
+  warning. The current definition addresses its cause: it queries the full ranked zone aggregate
+  and presents a ten-row table with in-cell bars. A current live API smoke and filtered ranking
+  integration test passed; visual browser verification remains manual. No formal
+  database-vs-lakehouse performance comparison was attempted.
 Phase 13 normal PR CI does not automate the two heavy tests, full Superset bootstrap/browser
 rendering, or the complete local full regression. These remain local/manual validations; the
 GitHub workflow does not deploy the application, publish an image, or enforce branch protection.
@@ -455,6 +477,13 @@ PostgreSQL's index candidate was measured on a small mart; its maintenance cost 
 No billion-row scalability or general Spark-cache conclusion is claimed. The lean local Docker
 images omit Git and the pipeline image omits PyYAML, so local hygiene ran with bundled host Python
 and Git while workflow YAML parsing ran in the Airflow image; hosted Quality also passed both.
+Power BI's custom visual and its local chat service are Desktop-only. The normal launcher requires
+the aggregate CSV export and an open loopback service; an unavailable Ollama model falls back to
+fixed-pattern matching. The current chat handles a bounded set of aggregate questions, not
+arbitrary SQL or autonomous analysis. The report itself is not a deployed service and a fresh
+clone needs local exports and a report refresh. Code-free CSV mode can be queried by other local
+sandboxed pages while running, so it must not be used with sensitive datasets. Power BI UI
+interaction and an in-report visual check are manual, not asserted by backend tests or CI.
 
 ## Architecture Decisions
 
@@ -538,6 +567,7 @@ and Git while workflow YAML parsing ran in the Airflow image; hosted Quality als
 
 ## Next work
 
-No additional engineering phase is in progress. Potential extensions such as Kafka/CDC, dbt, a
-production-grade catalog, and cloud deployment remain unimplemented; none are required to run or
-validate the current local batch pipeline.
+A bounded upgrade to Ask City Pulse is planned after the current issue-validation gate; it should
+retain deterministic numeric calculations while broadening supported questions through validated
+analytics queries. Potential extensions such as Kafka/CDC, dbt, a production-grade catalog, and
+cloud deployment remain unimplemented; none are required to run the current local batch pipeline.

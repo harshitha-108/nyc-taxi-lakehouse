@@ -50,7 +50,6 @@ def test_bar_charts_use_superset_6_echarts_contract() -> None:
     expected_axes = {
         "Hourly Pickup Demand": "pickup_hour",
         "Pickup Trips by Borough": "borough",
-        "Top Pickup Zones": "zone",
     }
     assert {spec.viz_type for spec in specs.values()} == {
         "big_number_total", "echarts_timeseries_line", "echarts_timeseries_bar", "pie",
@@ -74,16 +73,33 @@ def test_bar_charts_use_superset_6_echarts_contract() -> None:
     }]
     assert json.loads(query_context(7, payment.params))["queries"][0][
         "columns"] == payment.params["groupby"]
-    top_zones = specs["Top Pickup Zones"].params
-    assert top_zones["row_limit"] == 10
-    assert top_zones["order_desc"] is True
-    assert top_zones["orientation"] == "horizontal"
-    for name in ("Pickup Trips by Borough", "Top Pickup Zones"):
-        params = specs[name].params
-        assert params["x_axis_sort"] == params["metrics"][0]["label"]
-        # ECharts reverses the categorical Y axis for horizontal bars:
-        # ascending data order displays the largest bar at the top.
-        assert params["x_axis_sort_asc"] is True
+    params = specs["Pickup Trips by Borough"].params
+    assert params["x_axis_sort"] == params["metrics"][0]["label"]
+    # ECharts reverses the categorical Y axis for horizontal bars:
+    # ascending data order displays the largest bar at the top.
+    assert params["x_axis_sort_asc"] is True
+
+
+def test_top_pickup_zones_ranks_complete_aggregate_before_displaying_ten() -> None:
+    """A SQL row limit of ten triggers Superset's incomplete-results warning."""
+    spec = {spec.name: spec for spec in chart_specs()}["Top Pickup Zones"]
+    assert spec.mart == "pickup_zone_performance"
+    assert spec.viz_type == "table"
+    assert spec.params["query_mode"] == "aggregate"
+    assert spec.params["page_length"] == 10
+    assert spec.params["server_pagination"] is False
+    assert spec.params["show_cell_bars"] is True
+    assert spec.params["include_search"] is False
+    assert spec.params["timeseries_limit_metric"] == spec.params["metrics"][0]
+    assert spec.params["order_desc"] is True
+    context = json.loads(query_context(7, spec.params))
+    query = context["queries"][0]
+    assert query["columns"] == ["zone"]
+    assert query["metrics"] == [spec.params["metrics"][0]]
+    assert query["orderby"] == [[spec.params["metrics"][0], False]]
+    # The official TLC zone dimension has under 300 labels; fetch every group,
+    # then let the table's ten-row first page show the ranked result.
+    assert query["row_limit"] == 1000
 
 
 def test_dashboard_layout_contains_all_charts_once() -> None:
@@ -170,7 +186,6 @@ def test_all_analytical_charts_have_units_tooltips_and_stable_colors() -> None:
         "Daily Total Amount": ("Pickup Date", "Total Amount ($)"),
         "Hourly Pickup Demand": ("Pickup Hour (0–23)", "Trips"),
         "Pickup Trips by Borough": (None, "Trips"),
-        "Top Pickup Zones": (None, "Trips"),
     }
     for name, (category, measure) in axes.items():
         params = specs[name].params

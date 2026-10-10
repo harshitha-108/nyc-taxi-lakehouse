@@ -77,6 +77,31 @@ jobs:
       - name: Run service-independent tests
         run: pytest -p no:cacheprovider -m "not docker and not heavy" -q
 
+  powerbi-visual:
+    name: Power BI Visual
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: powerbi/cityPulseChat
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+          run_install: false
+      - name: Install locked visual dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck and lint custom visual
+        run: |
+          pnpm exec tsc --noEmit
+          pnpm exec eslint src
+
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest

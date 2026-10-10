@@ -11,6 +11,8 @@ import tempfile
 import threading
 import types
 import unittest
+import urllib.error
+import urllib.request
 from collections import deque
 from pathlib import Path
 from unittest.mock import patch
@@ -60,8 +62,10 @@ class ChatEngineTests(unittest.TestCase):
              "trip_count": 40, "total_revenue": "480.00", "total_tip_amount": "40.00"},
         ])
         _write_csv(folder, "hourly_demand", [
-            {**base, "_source_month": 1, "pickup_hour": 8, "trip_count": 10},
-            {**base, "_source_month": 1, "pickup_hour": 9, "trip_count": 20},
+            {**base, "_source_month": 1, "pickup_hour": 8, "trip_count": 10,
+             "total_revenue": "100.00"},
+            {**base, "_source_month": 1, "pickup_hour": 9, "trip_count": 20,
+             "total_revenue": "200.00"},
         ])
         _write_csv(folder, "payment_type_summary", [
             {**base, "_source_month": 1, "payment_type": 1, "trip_count": 25,
@@ -584,6 +588,71 @@ class ChatEngineTests(unittest.TestCase):
         self.assertEqual(health["status"], "missing_exports")
         self.assertEqual(health["missing_exports"], ["takeaway_breakdown"])
 
+    def test_invalid_csv_export_fails_as_source_error_not_server_exception(self) -> None:
+        path = self.folder / "daily_trip_metrics.csv"
+        for rows in (
+            [{"_source_taxi_type": "yellow", "_source_year": 2024,
+              "_source_month": 1, "pickup_date": "2024-01-01", "trip_count": 10,
+              "total_tip_amount": "1.00"}],  # Missing required amount column.
+            [{"_source_taxi_type": "yellow", "_source_year": 2024,
+              "_source_month": 1, "pickup_date": "2024-01-01", "trip_count": 10,
+              "total_revenue": "not-a-number", "total_tip_amount": "1.00"}],
+            [{"_source_taxi_type": "yellow", "_source_year": 2024,
+              "_source_month": 13, "pickup_date": "2024-01-01", "trip_count": 10,
+              "total_revenue": "10.00", "total_tip_amount": "1.00"}],
+        ):
+            with self.subTest(rows=rows):
+                _write_csv(self.folder, "daily_trip_metrics", rows)
+                with self.assertRaises(SourceError):
+                    self.engine.answer({"question": "How many trips?"})
+                health = self.engine.source.health()
+                self.assertEqual(health["status"], "missing_exports")
+                self.assertIn("daily_trip_metrics (invalid or unreadable)",
+                              health["missing_exports"])
+        self.assertTrue(path.exists())
+
+    def test_real_loopback_health_chat_and_bad_export_response(self) -> None:
+        environment = {"CHAT_AUTH_MODE": "local_public", "CHAT_DATA_SOURCE": "csv",
+                       "CHAT_CSV_DIR": str(self.folder), "CHAT_ALLOWED_ORIGINS": "null",
+                       "CHAT_OLLAMA_MODEL": ""}
+        with patch.dict(os.environ, environment):
+            server = make_server(0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        base_url = f"http://127.0.0.1:{server.server_port}"
+        body = json.dumps({"question": "How many trips?"}).encode("utf-8")
+        try:
+            health_request = urllib.request.Request(base_url + "/health",
+                                                    headers={"Origin": "null"})
+            with opener.open(health_request, timeout=3) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(json.load(response)["status"], "ready")
+            chat_request = urllib.request.Request(
+                base_url + "/chat", data=body,
+                headers={"Origin": "null", "Content-Type": "application/json"},
+            )
+            with opener.open(chat_request, timeout=3) as response:
+                self.assertEqual(response.status, 200)
+                self.assertIn("70 yellow taxi trips", json.load(response)["answer"])
+            _write_csv(self.folder, "daily_trip_metrics", [{
+                "_source_taxi_type": "yellow", "_source_year": 2024,
+                "_source_month": 1, "pickup_date": "2024-01-01", "trip_count": 10,
+                "total_revenue": "NaN", "total_tip_amount": "1.00",
+            }])
+            with self.assertRaises(urllib.error.HTTPError) as health_error:
+                opener.open(health_request, timeout=3)
+            self.assertEqual(health_error.exception.code, 503)
+            with self.assertRaises(urllib.error.HTTPError) as chat_error:
+                opener.open(chat_request, timeout=3)
+            self.assertEqual(chat_error.exception.code, 503)
+            self.assertIn("daily_trip_metrics.csv contains a non-finite value",
+                          json.load(chat_error.exception)["error"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
 
 class PostgresContractTests(unittest.TestCase):
     def test_health_checks_every_required_mart(self) -> None:
@@ -600,6 +669,30 @@ class PostgresContractTests(unittest.TestCase):
         self.assertEqual(source.health(), {"status": "unavailable", "source": "postgres"})
         self.assertIn("takeaway_breakdown", seen)
         self.assertEqual(set(seen), TABLES)
+
+    def test_unavailable_postgres_returns_source_error_and_unavailable_health(self) -> None:
+        class DatabaseUnavailable(Exception):
+            pass
+
+        fake_sql = types.ModuleType("psycopg2.sql")
+        fake_sql.SQL = str  # type: ignore[attr-defined]
+        fake_sql.Identifier = str  # type: ignore[attr-defined]
+        fake_psycopg = types.ModuleType("psycopg2")
+        fake_psycopg.Error = DatabaseUnavailable  # type: ignore[attr-defined]
+
+        def unavailable_connect(**_: object) -> None:
+            raise DatabaseUnavailable("connection refused")
+
+        fake_psycopg.connect = unavailable_connect  # type: ignore[attr-defined]
+        fake_psycopg.sql = fake_sql  # type: ignore[attr-defined]
+        with patch.dict(sys.modules, {"psycopg2": fake_psycopg,
+                                      "psycopg2.sql": fake_sql}), \
+             patch.dict(os.environ, {"ANALYTICS_DB_PASSWORD": "test-only"}):
+            source = PostgresSource()
+            with self.assertRaisesRegex(SourceError, "Could not read"):
+                source.fetch("daily_trip_metrics")
+            self.assertEqual(source.health(), {"status": "unavailable",
+                                               "source": "postgres"})
 
     def test_fixed_read_only_query_and_parameterized_values(self) -> None:
         calls: dict[str, object] = {}
