@@ -86,7 +86,7 @@ Page 3 — Fare & Payment, trip amounts and payment mix:
 
 ![Power BI fares and payment methods](docs/images/powerbi-city-pulse-fares.png)
 
-The report imports four **aggregated** serving-mart CSV exports. CSVs, imported-data cache, and local settings are deliberately excluded from Git; a fresh clone needs a local export and refresh before the visuals show data. The one-click [Open City Pulse launcher](powerbi/Open%20City%20Pulse.cmd) creates an ignored local working copy, opens it, and starts the optional in-report chat without changing the portable project source; see the [Power BI setup and limitations](powerbi/README.md) and [chat service guide](chatbot/README.md).
+The report imports four **aggregated** serving-mart CSV exports. CSVs, imported-data cache, and local settings are deliberately excluded from Git; a fresh clone needs a local export and refresh before the visuals show data. The one-click [Open City Pulse launcher](powerbi/Open%20City%20Pulse.cmd) creates an ignored local working copy, opens it, and starts the in-report chat without changing the portable project source. The assistant now handles bounded month/date/zone comparisons, observed trends, cautious anomaly flags, and session-scoped follow-ups, with an optional calculation disclosure; every figure comes from published marts. A separate opt-in protected mode can validate and execute a narrow local-model SQL proposal through a dedicated read-only PostgreSQL role. It is **not** enabled by the normal code-free CSV launcher. See the [Power BI setup and limitations](powerbi/README.md), [chat service guide](chatbot/README.md), and [Phase 2 validation](docs/phase2-validation-2026-10-11.md).
 
 ## Performance engineering
 
@@ -101,7 +101,7 @@ The complete local Docker regression passed **155 tests** after the Phase 14 cha
 | Job | Gate |
 | --- | --- |
 | Quality | Ruff, workflow YAML, Bash syntax, Compose configuration, Git hygiene and whitespace |
-| Fast Tests | Service-independent unit/contract/dashboard-definition tests on Python 3.11 and Java 17 |
+| Fast Tests | Service-independent unit/contract/dashboard-definition tests and the 60-case offline chat evaluation on Python 3.11 and Java 17 |
 | Power BI Visual | Installs locked visual dependencies, then typechecks and lints the custom chat visual |
 | Docker Build | Builds the pipeline image; does not publish it |
 | Integration Tests | Fresh MinIO/PostgreSQL, real Airflow DAG, Iceberg and serving tests without historical TLC data |

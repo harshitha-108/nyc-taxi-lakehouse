@@ -9,6 +9,10 @@ The historical validation records below describe the runs performed at each mile
 claims that every later feature passed the old Phase 14 test run. The current issue-validation gate,
 including environment-dependent checks and the corrected public GitHub About description, is in
 [`docs/phase1-validation-2026-10-10.md`](docs/phase1-validation-2026-10-10.md).
+The bounded Ask City Pulse upgrade is described separately in
+[`docs/phase2-validation-2026-10-11.md`](docs/phase2-validation-2026-10-11.md): its offline
+synthetic evaluation and static checks are complete, while protected live PostgreSQL execution and
+Power BI Desktop interaction still require explicit local validation. It has not been pushed.
 
 ## Completed
 
@@ -479,11 +483,14 @@ images omit Git and the pipeline image omits PyYAML, so local hygiene ran with b
 and Git while workflow YAML parsing ran in the Airflow image; hosted Quality also passed both.
 Power BI's custom visual and its local chat service are Desktop-only. The normal launcher requires
 the aggregate CSV export and an open loopback service; an unavailable Ollama model falls back to
-fixed-pattern matching. The current chat handles a bounded set of aggregate questions, not
-arbitrary SQL or autonomous analysis. The report itself is not a deployed service and a fresh
+deterministic matching. The expanded chat handles bounded analytical questions and session-scoped
+follow-ups. An opt-in protected PostgreSQL path can accept only AST-validated, recompiled SQL
+proposals over approved marts with a separate reader role; it is not arbitrary SQL or autonomous
+analysis and is disabled in the normal code-free launcher. The report itself is not a deployed service and a fresh
 clone needs local exports and a report refresh. Code-free CSV mode can be queried by other local
 sandboxed pages while running, so it must not be used with sensitive datasets. Power BI UI
-interaction and an in-report visual check are manual, not asserted by backend tests or CI.
+interaction and an in-report visual check are manual, not asserted by backend tests or CI. An
+existing ignored local report copy does not automatically receive a newly bundled visual.
 
 ## Architecture Decisions
 
@@ -567,7 +574,8 @@ interaction and an in-report visual check are manual, not asserted by backend te
 
 ## Next work
 
-A bounded upgrade to Ask City Pulse is planned after the current issue-validation gate; it should
-retain deterministic numeric calculations while broadening supported questions through validated
-analytics queries. Potential extensions such as Kafka/CDC, dbt, a production-grade catalog, and
+Before claiming the optional protected SQL mode as end-to-end verified, provision the dedicated
+reader in a local PostgreSQL instance, test a validated query through that account, and visually
+inspect the new chat bundle in a disposable Power BI Desktop copy. Rerun hosted CI after an
+explicitly authorised push. Potential extensions such as Kafka/CDC, dbt, a production-grade catalog, and
 cloud deployment remain unimplemented; none are required to run the current local batch pipeline.

@@ -26,7 +26,14 @@
 }
 .city-pulse-chat * { box-sizing: border-box; }
 .city-pulse-chat-header { padding: 16px 22px 14px; background: @ink; border-top: 5px solid @gold; color: #fff; }
+.city-pulse-chat-header-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .city-pulse-chat-kicker { font-size: 10px; font-weight: 700; letter-spacing: .16em; color: @gold; }
+.city-pulse-chat-reset {
+    flex: none; padding: 5px 10px; border: 1px solid #8c9bb5; border-radius: 14px;
+    background: transparent; color: #fff; font: 600 11px "Segoe UI", Arial, sans-serif; cursor: pointer;
+}
+.city-pulse-chat-reset:hover { background: #303d56; }
+.city-pulse-chat-reset:focus-visible { outline: 2px solid @gold; outline-offset: 2px; }
 .city-pulse-chat-title { font-size: 28px; line-height: 1.15; margin: 8px 0 3px; font-weight: 750; }
 .city-pulse-chat-subtitle { color: #d7dfeb; font-size: 12px; margin: 0; }
 .city-pulse-chat-scope {
@@ -50,6 +57,15 @@
 }
 .city-pulse-message-user .city-pulse-message-body {
     border-color: @teal; border-radius: 13px 13px 3px 13px; background: #e9f5f3;
+}
+.city-pulse-message-calculation {
+    margin: 5px 0 0 6px; color: #43546a; font-size: 11px;
+}
+.city-pulse-message-calculation-label { cursor: pointer; font-weight: 600; }
+.city-pulse-message-calculation-label:focus-visible { outline: 2px solid @teal; outline-offset: 2px; }
+.city-pulse-message-calculation-body {
+    margin-top: 7px; padding: 9px 10px; border: 1px solid #dce3eb; border-radius: 8px;
+    background: #fff; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .city-pulse-chat-suggestions { display: flex; flex-wrap: wrap; gap: 7px; padding: 10px 22px 14px; }
 .city-pulse-chat-chip {

@@ -1,7 +1,7 @@
 {
   "name": "city-pulse-chat-visual",
   "description": "In-report NYC Taxi chat launcher and Power BI modal dialog",
-  "version": "1.0.0.9",
+  "version": "1.0.0.10",
   "repository": {
     "type": "git",
     "url": "https://github.com/harshitha-108/nyc-taxi-lakehouse"
