@@ -140,6 +140,10 @@ class ProvisionChatReaderTests(unittest.TestCase):
                             for statement in mutation))
         self.assertTrue(any("SET default_transaction_read_only = on" in statement
                             for statement in mutation))
+        privilege_check = next(params for statement, params in cursor.calls
+                               if statement.startswith("SELECT has_database_privilege"))
+        self.assertEqual(privilege_check[0], "city_pulse_reader")
+        self.assertEqual(privilege_check[2], "city_pulse_reader")
 
     def test_existing_safe_role_is_reconfigured_without_recreation(self) -> None:
         cursor = _Cursor(role=(False,) * 5)

@@ -171,13 +171,14 @@ def _provision(cursor: object, config: ProvisionConfig) -> None:
         "AND c.relkind IN ('r', 'p', 'v', 'm') "
         "AND NOT (n.nspname = %s AND c.relname = ANY(%s)) "
         "AND has_table_privilege(%s, c.oid, 'SELECT')",
-        (_SCHEMA, sorted(CHAT_MARTS), role),
+        (_SCHEMA, sorted(CHAT_MARTS), config.reader_user),
     )
     if cursor.fetchall():
         raise ProvisionError("Chat role would inherit SELECT on an unapproved relation")
     cursor.execute("SELECT has_database_privilege(%s, %s, 'CREATE'), "
                    "has_schema_privilege(%s, %s, 'CREATE')",
-                   (role, database, role, _SCHEMA))
+                   (config.reader_user, config.database,
+                    config.reader_user, _SCHEMA))
     if any(cursor.fetchone()):
         raise ProvisionError("Chat role would inherit CREATE privilege from another grant")
 

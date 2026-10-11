@@ -11,8 +11,9 @@ including environment-dependent checks and the corrected public GitHub About des
 [`docs/phase1-validation-2026-10-10.md`](docs/phase1-validation-2026-10-10.md).
 The bounded Ask City Pulse upgrade is described separately in
 [`docs/phase2-validation-2026-10-11.md`](docs/phase2-validation-2026-10-11.md): its offline
-synthetic evaluation and static checks are complete, while protected live PostgreSQL execution and
-Power BI Desktop interaction still require explicit local validation. It has not been pushed.
+synthetic evaluation, static checks, and an isolated PostgreSQL reader smoke are complete,
+while the user's running PostgreSQL/Power BI Desktop interaction still requires explicit
+local validation. It has not been pushed.
 
 ## Completed
 

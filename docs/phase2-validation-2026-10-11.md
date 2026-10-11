@@ -54,7 +54,7 @@ the full conversation is not retained by the backend.
 
 | Check | Observed result |
 | --- | --- |
-| Original and new chatbot unit tests, including temporary loopback HTTP | 83 passed |
+| Original and new chatbot unit tests, including temporary loopback HTTP | 85 passed |
 | Service-independent suite inside newly built pipeline image | 265 passed, 1 Airflow import skip, 13 deselected; the image lacks Git, so its one Git-index test was excluded |
 | Dedicated reader-provisioning unit tests | 7 passed |
 | Power BI embedded visual version/contract test | 1 passed |
@@ -63,6 +63,7 @@ the full conversation is not retained by the backend.
 | Custom visual TypeScript typecheck and ESLint | Passed |
 | Custom visual package build | Passed; portable PBIP bundles version 1.0.0.10 |
 | Optional Docker Compose port-override configuration | `docker compose ... config --quiet` passed |
+| Disposable PostgreSQL 16 reader integration | Six aggregate tables seeded; corrected provisioner created reader; validated query returned only yellow rows (72 card, 18 cash); `default_transaction_read_only=on`, no SELECT on a seventh table, no schema CREATE |
 | Offline invented-mart evaluation, 60 questions | 59 pass, 0 fail, 1 manual review |
 | Offline evaluation latency on this host | p50 1.878 ms, p95 22.152 ms, max 38.048 ms |
 | Local Ollama `qwen2.5:1.5b` proposal for all-month payment grouping | Validated SELECT, no invented month filter after prompt/scope correction |
@@ -75,8 +76,14 @@ its small synthetic fixture has too few same-weekday peers to classify an
 outlier, so the observed answer says none qualifies. The timing above covers
 only the offline deterministic fixture, not Ollama or PostgreSQL latency.
 The SQL security/execution test files contain 20 focused parser/executor tests
-within the chatbot suite. The SQL proposal smoke checked Ollama and the
-validator only; it did **not** run a database query.
+within the chatbot suite. The Ollama proposal smoke checked the local model
+and validator, while the separate disposable PostgreSQL test checked the
+executor and grants. The model-to-executor path was **not** exercised against
+the user's existing project database. The first disposable provisioning
+attempt exposed a quoted-role-name bug; its transaction rolled back. After
+correcting the bound role name, provisioning and the privilege checks passed.
+The disposable container and network were then removed; no persistent
+volume or user data was changed.
 An earlier test attempt using `docker run --network none` produced 16 Spark
 fixture setup errors because Spark could not resolve its own container
 hostname. The normal-bridge rerun above passed; no pipeline code change was
@@ -103,8 +110,8 @@ Sample answers checked against the local exported aggregate CSVs:
 
 - The dedicated reader has **not** been provisioned against the user's running
   PostgreSQL instance; `.env` does not yet contain its credentials. Its
-  grants, timeouts, and result cap are covered by mocked tests, not a live
-  end-to-end database assertion. The optional loopback port override was
+  grants were verified in an isolated disposable PostgreSQL instance, while
+  timeouts and result caps are also covered by mocked tests. The optional loopback port override was
   config-validated but not applied to the long-running database container.
 - The portable PBIP's bundled chat resource was rebuilt and version-checked,
   but Power BI Desktop has not been reopened to verify rendering and dialog
