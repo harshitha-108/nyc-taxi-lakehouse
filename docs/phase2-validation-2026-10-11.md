@@ -75,6 +75,13 @@ refusals, follow-ups, and injection attempts. T07 remains for manual review:
 its small synthetic fixture has too few same-weekday peers to classify an
 outlier, so the observed answer says none qualifies. The timing above covers
 only the offline deterministic fixture, not Ollama or PostgreSQL latency.
+Within that synthetic run, response-contract validity and execution were
+60/60, numeric correctness passed 49/49 automatically checkable answers,
+10/10 unsupported or hostile prompts were handled safely, and the one
+qualitative anomaly case remained manual review. These are per-case checks,
+not a live model SQL-validity or deployment success rate. Only one live Ollama
+SQL proposal was sampled, so no meaningful proposal acceptance percentage is
+claimed.
 The SQL security/execution test files contain 20 focused parser/executor tests
 within the chatbot suite. The Ollama proposal smoke checked the local model
 and validator, while the separate disposable PostgreSQL test checked the
