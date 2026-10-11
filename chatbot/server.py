@@ -14,8 +14,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import urlparse
 
+from chatbot.advanced_engine import AdvancedChatEngine
 from chatbot.data import SourceError, source_from_env
-from chatbot.engine import ChatEngine, InvalidRequest
+from chatbot.engine import InvalidRequest
 
 DEFAULT_ALLOWED_ORIGINS = frozenset({"https://ms-pbi.pbi.microsoft.com"})
 ACCESS_CODE_HEADER = "X-City-Pulse-Code"
@@ -48,7 +49,7 @@ def allowed_origins_from_env() -> frozenset[str]:
 
 
 class ChatHandler(BaseHTTPRequestHandler):
-    engine: ChatEngine
+    engine: AdvancedChatEngine
     allowed_origins: frozenset[str] = DEFAULT_ALLOWED_ORIGINS
     access_code: str = ""
     auth_mode: str = "code"
@@ -158,8 +159,17 @@ def make_server(port: int = 8765) -> ThreadingHTTPServer:
     """Power BI Desktop calls only a host-local endpoint."""
     mode = auth_mode_from_env()
     source = source_from_env()
+    sql_executor = None
+    dynamic_sql = os.environ.get("CHAT_ENABLE_DYNAMIC_SQL", "0")
+    if dynamic_sql not in {"0", "1"}:
+        raise ValueError("CHAT_ENABLE_DYNAMIC_SQL must be 0 or 1")
+    if dynamic_sql == "1":
+        if mode != "code" or os.environ.get("CHAT_DATA_SOURCE", "csv").casefold() != "postgres":
+            raise ValueError("Dynamic SQL needs protected PostgreSQL chat mode")
+        from chatbot.sql_execution import PostgresQueryExecutor
+        sql_executor = PostgresQueryExecutor.from_env()
     handler = type("LocalChatHandler", (ChatHandler,),
-                   {"engine": ChatEngine(source),
+                   {"engine": AdvancedChatEngine(source, sql_executor=sql_executor),
                     "allowed_origins": allowed_origins_from_env(),
                     "auth_mode": mode,
                     "access_code": secrets.token_urlsafe(12) if mode == "code" else "",

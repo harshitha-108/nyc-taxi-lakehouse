@@ -1,0 +1,6 @@
+# Optional, local-only PostgreSQL access for protected City Pulse SQL mode.
+# Do not use this override on a shared host or expose the port beyond loopback.
+services:
+  airflow-postgres:
+    ports:
+      - "127.0.0.1:5433:5432"

@@ -30,3 +30,11 @@ volumes/
 minio-data/
 postgres-data/
 airflow/logs/
+powerbi/.local/
+powerbi/cityPulseChat/node_modules/
+powerbi/cityPulseChat/.pnpm-store/
+powerbi/cityPulseChat/.tmp/
+powerbi/cityPulseChat/dist/
+powerbi/cityPulseChat/webpack.statistics*.html
+**/.pbi/cache.abf
+**/.pbi/localSettings.json

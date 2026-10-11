@@ -125,12 +125,19 @@ class PostgresSource:
     """Parameterised SELECTs against the published PostgreSQL analytics schema."""
 
     def __init__(self) -> None:
+        reader_user = os.environ.get("CHAT_READONLY_DB_USER", "").strip()
+        reader_password = os.environ.get("CHAT_READONLY_DB_PASSWORD", "")
+        if bool(reader_user) != bool(reader_password):
+            raise SourceError("Set both CHAT_READONLY_DB_USER and CHAT_READONLY_DB_PASSWORD")
         self.connect_kwargs = {
-            "host": os.environ.get("ANALYTICS_DB_HOST", "127.0.0.1"),
-            "port": int(os.environ.get("ANALYTICS_DB_PORT", "5432")),
-            "dbname": os.environ.get("ANALYTICS_DB_NAME", "nyc_taxi_analytics"),
-            "user": os.environ.get("ANALYTICS_DB_USER", "analytics_dev"),
-            "password": os.environ.get("ANALYTICS_DB_PASSWORD", ""),
+            "host": os.environ.get("CHAT_READONLY_DB_HOST")
+            or os.environ.get("ANALYTICS_DB_HOST", "127.0.0.1"),
+            "port": int(os.environ.get("CHAT_READONLY_DB_PORT")
+                        or os.environ.get("ANALYTICS_DB_PORT", "5432")),
+            "dbname": os.environ.get("CHAT_READONLY_DB_NAME")
+            or os.environ.get("ANALYTICS_DB_NAME", "nyc_taxi_analytics"),
+            "user": reader_user or os.environ.get("ANALYTICS_DB_USER", "analytics_dev"),
+            "password": reader_password or os.environ.get("ANALYTICS_DB_PASSWORD", ""),
             "connect_timeout": 3,
         }
 
@@ -145,7 +152,7 @@ class PostgresSource:
         except ImportError as exc:
             raise SourceError("PostgreSQL mode needs psycopg2-binary") from exc
         if not self.connect_kwargs["password"]:
-            raise SourceError("ANALYTICS_DB_PASSWORD is required in PostgreSQL mode")
+            raise SourceError("A PostgreSQL chat password is required")
         statement = sql.SQL("SELECT * FROM analytics.{} WHERE _source_taxi_type = %s").format(
             sql.Identifier(table))
         parameters: list[Any] = ["yellow"]
