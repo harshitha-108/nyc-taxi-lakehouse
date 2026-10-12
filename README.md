@@ -19,27 +19,40 @@ A local batch lakehouse for official [NYC TLC Yellow Taxi trips](https://www.nyc
 flowchart TB
     TLC["Official TLC Yellow Taxi Parquet"] --> ING["Python ingestion"] --> RAW["Raw: source-preserved"]
     RAW --> GATE["Schema contract gate"] --> BR["Bronze: source + lineage"] --> SI["Silver: standardize + validate"]
-    SI -->|Valid| V["Valid Silver"] --> GOLD["Gold: monthly analytics marts"]
+    SI -->|Valid| V["Valid Silver"] --> GOLD["Gold: four base analytics marts"]
     SI -->|Rejected| Q["Quarantine: failure reasons"]
     Z["Official TLC Taxi Zone lookup"] --> REF["Validated zone dimension"]
-    GOLD --> LOC["Pickup location mart"]
-    REF --> GEO["Geographic enrichment"]
-    LOC --> GEO --> ZONE["Pickup zone mart"]
-    GOLD --> PUB["Optional Iceberg publication"] --> MINIO["Iceberg tables on MinIO"]
-    ZONE --> PUB
-    GOLD --> SERVE["PostgreSQL: five serving marts"]
-    ZONE --> SERVE --> BI["Superset dashboard"]
-    SERVE --> CSV["Aggregate CSV exports"] --> PBI["Power BI Desktop report"]
-    CSV --> API["Local read-only chat API"]
+    GOLD --> GEO["Pickup-location enrichment"]
+    REF --> GEO --> ZONE["Fifth Gold: pickup-zone mart"]
+    V --> TAKE["Silver-derived takeaway breakdown"]
+    REF --> TAKE
+    BR -.-> OPT["Optional publication: 8 local Parquet datasets"]
+    V -.-> OPT
+    Q -.-> OPT
+    GOLD -.-> OPT
+    ZONE -.-> OPT
+    OPT --> ICE["Apache Iceberg tables"] --> MINIO["MinIO object storage"]
+    GOLD --> SERVE["PostgreSQL: five Gold marts + separate insight table"]
+    ZONE --> SERVE
+    TAKE --> SERVE
+    SERVE --> BI["Superset dashboard"]
+    SERVE --> CSV["PostgreSQL COPY: five aggregate CSV exports"]
+    CSV -->|Four imported CSVs| PBI["Power BI Desktop report"]
+    CSV -->|Five read-only CSVs| API["Local chat API"]
     PBI --> UI["Ask City Pulse visual"] --> API
     API --> CALC["Validated calculations + session context"]
-    MODEL["Optional local Ollama"] -. supported intent .-> API
+    CALC --> ANSWER["Answer in chat; charts unchanged"]
+    MODEL["Optional local Ollama"] -. intent interpretation .-> API
+    API -. opt-in protected SQL .-> PROPOSE["Local-model SQL proposal"]
+    PROPOSE --> GUARD["AST + semantic checks"] --> READER["Read-only PostgreSQL reader"]
+    SERVE -. approved marts .-> READER
+    READER -. validated result .-> CALC
     AIR["Airflow: monthly tasks, retries, reconciliation"] -. orchestrates .-> ING
     AIR -. orchestrates .-> SI
     AIR -. orchestrates .-> SERVE
 ```
 
-Raw retains downloaded files; Bronze preserves source business columns and adds lineage; Silver creates valid and quarantined partitions; Gold aggregates **only valid Silver**. The optional Iceberg path publishes validated local outputs to MinIO—MinIO stores objects while Iceberg manages table snapshots. Airflow and the CLI orchestrator control work; neither is a business-data store. The five Gold marts are daily trips, hourly demand, pickup-location performance, payment-type summary, and zone-enriched pickup performance. Power BI and the normal chat mode use local aggregate CSV exports; questions do not alter charts. Ollama may interpret wording but fixed, validated code calculates the numbers. A separate, **opt-in** protected mode accepts only SQL proposals that pass AST validation and compilation before a dedicated read-only PostgreSQL account executes them; it is not part of the normal CSV launcher. The complete [stage-by-stage record](docs/implementation-history.md) explains how the system evolved.
+Raw retains downloaded files; Bronze preserves source business columns and adds lineage; Silver creates valid and quarantined partitions; Gold aggregates **only valid Silver**. The optional Iceberg path publishes eight local Parquet datasets—Bronze, valid Silver, quarantine, and five Gold marts—to MinIO; it is not required for the default filesystem-to-PostgreSQL path. Airflow and the CLI orchestrator control work; neither is a business-data store. The five Gold marts are daily trips, hourly demand, pickup-location performance, payment-type summary, and zone-enriched pickup performance. A separate, Silver-derived takeaway breakdown is published to PostgreSQL for filter-responsive insights. PostgreSQL directly serves Superset and exports five aggregate CSVs: Power BI imports four, while the normal local chat API reads all five. Questions do not alter charts. Ollama may interpret wording but fixed, validated code calculates the numbers. A separate, **opt-in** protected mode accepts only SQL proposals that pass AST and semantic validation before a dedicated read-only PostgreSQL account executes them; it is not part of the normal CSV launcher. The complete [stage-by-stage record](docs/implementation-history.md) explains how the system evolved.
 
 ## Dataset and scale
 
@@ -180,4 +193,4 @@ docs/                      Technical development history
 
 This is a local single-machine demonstration, **not** a hardened or managed-cloud deployment. The SQLite Iceberg JDBC catalog is single-writer; Iceberg commits are per table, whereas PostgreSQL serving publication is transactional across five Gold marts per period. The takeaway breakdown is published in a separate transaction: if that step fails, retry the serving stage before relying on the insight cards. The pinned community MinIO image and development credentials are for loopback-only use. Airflow's paused schedule must account for TLC release lag. Superset's local setup lacks production rate limiting/CSP, and browser visual regression is manual. Full historical data and performance runs are excluded from CI, and the measured Gold improvement does not establish performance at larger scale.
 
-If deployed elsewhere, MinIO could map to S3/ADLS, local Spark to managed Spark, local Airflow to managed Airflow, and local PostgreSQL/Superset to appropriate managed serving/BI services. Those are **reference mappings**, not services used by this repository. Kafka, CDC, and dbt are not implemented.
+If deployed elsewhere, MinIO could map to S3/ADLS, local Spark to managed Spark, local Airflow to managed Airflow, and local PostgreSQL/Superset to appropriate managed serving/BI services. Those are **reference mappings**, not services used by this repository. This batch project does not implement streaming ingestion or change-data capture.

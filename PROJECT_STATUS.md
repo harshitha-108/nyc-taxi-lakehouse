@@ -78,10 +78,10 @@ validation and is not the mode used in that Power BI demonstration.
   reconciliation across local Parquet, Iceberg, and PostgreSQL serving
 - MinIO/Iceberg snapshot recovery and PostgreSQL five-mart rollback/retry tests using isolated state
 - Airflow task-state failure matrix and dashboard definition preflight/regression tests
-- GitHub Actions `CI` workflow with separate Quality, Fast Tests, Integration Tests, and Docker Build
-  jobs; push-to-main and pull-request triggers, branch/PR concurrency, and read-only permissions
-- Added a Power BI Visual CI job for locked-dependency TypeScript typecheck and ESLint; its remote
-  status should be checked on the current GitHub Actions run rather than inferred from local checks
+- GitHub Actions `CI` workflow with five jobs: Quality, Fast Tests, Power BI Visual, Integration
+  Tests, and Docker Build; push-to-main and pull-request triggers, branch/PR concurrency, and
+  read-only permissions. The visual job uses locked dependencies for TypeScript and ESLint; its
+  remote result must be checked on the current Actions run rather than inferred from local checks
 - Explicit pytest `integration`, `docker`, and `heavy` markers, plus a tracked-file hygiene guard
 - Fresh-run CI service configuration, MinIO/PostgreSQL health-gated integration, and failure diagnostics
 - Reproducible local January 2024 performance harness with Spark plan, shuffle, file-layout,
@@ -112,9 +112,10 @@ reads the validated local Gold Parquet path in both filesystem and Iceberg modes
 transaction per source period. The `takeaway_breakdown` publication for filter-responsive Superset
 insights is a separate transaction; a failure there requires retry before trusting those cards.
 Superset queries serving tables only. Its current bootstrap defines 13 saved charts across five
-Gold-derived serving datasets plus the takeaway dataset. Power BI imports local aggregate CSV
-exports into a three-page Desktop report; it is not a Power BI Service deployment. The report's
-Ask City Pulse visual calls a loopback-only API that answers from read-only published aggregates.
+Gold-derived serving datasets plus the takeaway dataset. PostgreSQL `COPY` exports five aggregate
+CSVs: Power BI imports four into a three-page Desktop report, while the default local chat API reads
+all five. This is not a Power BI Service deployment. The report's Ask City Pulse visual calls a
+loopback-only API that answers from those read-only published aggregates.
 Optional local Ollama helps interpret wording; deterministic code calculates the numeric answer.
 The normal launcher uses code-free CSV mode, which is appropriate only for this public dataset.
 The assistant supports bounded month/date-range, borough/zone and payment-share comparisons,
@@ -124,7 +125,6 @@ and **New chat** clears the context. The optional **How this was calculated** di
 the mart-backed result without displaying a source list. Chat questions do not alter Power BI charts.
 Protected dynamic SQL is a distinct opt-in mode: a local-model proposal is parsed, constrained,
 recompiled, and executed through a dedicated read-only PostgreSQL role only when configured.
-dbt is not implemented.
 GitHub Actions now checks the repository and image build on every main push and pull request. Its
 integration job starts fresh MinIO/PostgreSQL services without launching Airflow scheduler/webserver
 or Superset; no historical NYC data is used. There is no production deployment target or CD job.
@@ -589,5 +589,5 @@ does not automatically receive a newly bundled visual.
 Before claiming the optional protected SQL mode as end-to-end verified, provision the dedicated
 reader in a local PostgreSQL instance and test a validated query through that account. Check hosted
 CI after the next push; local tests alone are not remote verification. Potential extensions such as
-Kafka/CDC, dbt, a production-grade catalog, and
-cloud deployment remain unimplemented; none are required to run the current local batch pipeline.
+streaming/CDC, a production-grade catalog, and cloud deployment remain unimplemented; none are
+required to run the current local batch pipeline.
