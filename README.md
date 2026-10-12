@@ -17,36 +17,52 @@ A local batch lakehouse for official [NYC TLC Yellow Taxi trips](https://www.nyc
 
 ```mermaid
 flowchart TB
-    TLC["Official TLC Yellow Taxi Parquet"] --> ING["Python ingestion"] --> RAW["Raw: source-preserved"]
-    RAW --> GATE["Schema contract gate"] --> BR["Bronze: source + lineage"] --> SI["Silver: standardize + validate"]
-    SI -->|Valid| V["Valid Silver"] --> GOLD["Gold: four base analytics marts"]
-    SI -->|Rejected| Q["Quarantine: failure reasons"]
-    Z["Official TLC Taxi Zone lookup"] --> REF["Validated zone dimension"]
-    GOLD --> GEO["Pickup-location enrichment"]
-    REF --> GEO --> ZONE["Fifth Gold: pickup-zone mart"]
-    V --> TAKE["Silver-derived takeaway breakdown"]
-    REF --> TAKE
-    BR -.-> OPT["Optional publication: 8 local Parquet datasets"]
+    subgraph INGEST["01 · Ingest"]
+        direction LR
+        TLC["Official TLC Yellow Taxi Parquet"] --> ING["Python ingestion"] --> RAW["Raw: source-preserved"] --> GATE["Schema contract gate"] --> BR["Bronze: source + lineage"]
+    end
+    subgraph REFINE["02 · Refine and enrich"]
+        direction LR
+        SI["Silver: standardize + validate"] -->|Valid| V["Valid Silver"] --> GOLD["Gold: four base analytics marts"]
+        SI -->|Rejected| Q["Quarantine: failure reasons"]
+        Z["Official TLC Taxi Zone lookup"] --> REF["Validated zone dimension"] -->|Geographic enrichment| GEO["Pickup-location enrichment"]
+        GOLD --> GEO --> ZONE["Fifth Gold: pickup-zone mart"]
+        V --> TAKE["Silver-derived takeaway breakdown"]
+        REF --> TAKE
+    end
+    subgraph EXPLORE["03 · Serve and explore"]
+        direction LR
+        SERVE["PostgreSQL: five Gold marts + separate insight table"] --> BI["Superset dashboard"]
+        SERVE --> CSV["PostgreSQL COPY: five aggregate CSV exports"] -->|Four imported CSVs| PBI["Power BI Desktop report"]
+    end
+    subgraph ASK["04 · Ask City Pulse: default CSV-backed answers"]
+        direction LR
+        UI["Embedded Power BI chat"] --> API["Local chat API"] --> CALC["Session context + validated calculations"] --> ANSWER["Validated answer; charts unchanged"]
+        ANSWER -->|Returns to chat popup| UI
+    end
+    BR --> SI
+    GOLD --> SERVE
+    ZONE --> SERVE
+    TAKE --> SERVE
+    PBI --> UI
+    CSV -->|Five read-only CSVs| API
+    subgraph LAKE["Optional Iceberg publication"]
+        direction LR
+        OPT["8 local Parquet datasets"] -.-> ICE["Apache Iceberg tables"] -.-> MINIO["MinIO object storage"]
+    end
+    BR -.-> OPT
     V -.-> OPT
     Q -.-> OPT
     GOLD -.-> OPT
     ZONE -.-> OPT
-    OPT --> ICE["Apache Iceberg tables"] --> MINIO["MinIO object storage"]
-    GOLD --> SERVE["PostgreSQL: five Gold marts + separate insight table"]
-    ZONE --> SERVE
-    TAKE --> SERVE
-    SERVE --> BI["Superset dashboard"]
-    SERVE --> CSV["PostgreSQL COPY: five aggregate CSV exports"]
-    CSV -->|Four imported CSVs| PBI["Power BI Desktop report"]
-    CSV -->|Five read-only CSVs| API["Local chat API"]
-    PBI --> UI["Ask City Pulse visual"] --> API
-    API --> CALC["Validated calculations + session context"]
-    CALC --> ANSWER["Answer in chat; charts unchanged"]
-    MODEL["Optional local Ollama"] -. intent interpretation .-> API
-    API -. opt-in protected SQL .-> PROPOSE["Local-model SQL proposal"]
-    PROPOSE --> GUARD["AST + semantic checks"] --> READER["Read-only PostgreSQL reader"]
-    SERVE -. approved marts .-> READER
-    READER -. validated result .-> CALC
+    MODEL["Optional local Ollama: intent only"] -. Interpret wording .-> API
+    subgraph SQL["Opt-in protected SQL mode"]
+        direction LR
+        PROPOSE["Local-model SQL proposal"] -.-> GUARD["AST + semantic validation"] -.-> READER["Read-only PostgreSQL reader"]
+    end
+    API -. Opt-in only .-> PROPOSE
+    SERVE -. Approved marts .-> READER
+    READER -. Validated result .-> CALC
     AIR["Airflow: monthly tasks, retries, reconciliation"] -. orchestrates .-> ING
     AIR -. orchestrates .-> SI
     AIR -. orchestrates .-> SERVE
