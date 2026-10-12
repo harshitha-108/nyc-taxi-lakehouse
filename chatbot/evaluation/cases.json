@@ -69,6 +69,10 @@
     {"id":"FUP02","category":"followup","turns":["Which pickup zone had most trips in May 2024?","How did it do in June?"],"expected":{"outcome":"answer","numbers":[50,20,-30],"terms":["Midtown"]}},
     {"id":"FUP03","category":"followup","turns":["Compare Manhattan and Queens trips.","What about June 2024?"],"expected":{"outcome":"answer","numbers":[20,30],"terms":["Manhattan","Queens"]}},
     {"id":"FUP04","category":"followup","turns":["How many credit card trips were in May 2024?","What share was that?"],"expected":{"outcome":"answer","numbers":[80],"tolerance":0.1,"terms":["credit"]}},
-    {"id":"FUP05","category":"followup","turns":["How did May compare with June on trips?","And for recorded tips?"],"expected":{"outcome":"answer","numbers":[180,100,80],"terms":["tip"]}}
+    {"id":"FUP05","category":"followup","turns":["How did May compare with June on trips?","And for recorded tips?"],"expected":{"outcome":"answer","numbers":[180,100,80],"terms":["tip"]}},
+    {"id":"FUP06","category":"followup","turns":["Which month had the most taxi trips?","What were the total tips for that month?","How does that compare with June?"],"expected":{"outcome":"answer","numbers":[100,180,80],"terms":["May","June","tips"]}},
+    {"id":"FUP07","category":"followup","turns":["How did trips change from May to June 2024?","What were the total tips for that month?"],"expected":{"outcome":"clarify","terms":["May","June"],"terms_any":["ambiguous"]}},
+    {"id":"FUP08","category":"followup","turns":["Which month had the most trips?","What were the total tips for that month?","What about June 2024?"],"expected":{"outcome":"answer","numbers":[100],"terms":["June","tips"]}},
+    {"id":"FUP09","category":"followup","turns":["Which month had the most trips?","What were the total CO2 emissions for that month?"],"expected":{"outcome":"unavailable","terms_any":["not published"]}}
   ]
 }

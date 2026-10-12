@@ -1,7 +1,7 @@
 # Ask City Pulse evaluation
 
 This is an offline, reproducible **synthetic-data** evaluation, not a claim about
-the production TLC dataset or a hosted model. `cases.json` contains 60 natural-
+the production TLC dataset or a hosted model. `cases.json` contains 64 natural-
 language cases across totals, report filters, rankings, comparisons, trends and
 anomalies, multi-step analysis, follow-ups, and unsupported or hostile requests.
 The invented rows in `fixture.py` reconcile across all five Gold-like marts.

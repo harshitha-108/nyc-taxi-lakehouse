@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
@@ -19,6 +20,7 @@ from chatbot.analytics_ops import (
     bounded_steps,
     compare_periods,
     compare_shares,
+    compare_values,
     detect_anomalies,
     monthly_trend,
     weekday_weekend,
@@ -91,6 +93,58 @@ def _metric(question: str) -> str:
     return "trip_count"
 
 
+_METRIC_WORDING = {
+    "trip_count": "trips",
+    "tip_amount": "recorded tips",
+    "total_amount": "TLC total amount",
+    "estimated_fare_amount": "estimated fare amount",
+    "average_fare_amount": "average fare",
+    "average_trip_distance": "average trip distance",
+}
+
+
+def _explicit_metric(question: str) -> str | None:
+    """Return a metric only when the current turn actually names one."""
+    if re.search(r"\b(tips?|gratuity|gratuities)\b", question, re.I):
+        return "tip_amount"
+    if re.search(r"\b(fares?|distance|miles)\b", question, re.I):
+        return _metric(question)
+    if re.search(r"\b(revenue|total amount|trip amount|money|earnings)\b",
+                 question, re.I):
+        return "total_amount"
+    if re.search(r"\b(trips?|rides?|volume|demand|pickups?)\b", question, re.I):
+        return "trip_count"
+    return None
+
+
+def _unsupported_metric(question: str) -> bool:
+    """Do not coerce a clearly unavailable measure into default trip counts."""
+    unsupported = bool(re.search(
+        r"\b(?:co2|co₂|carbon|emissions?|fuel|gasoline|speed|wait(?:ing)? time|"
+        r"driver earnings|trip duration)\b", question, re.I,
+    ))
+    # Peer medians describe the supported anomaly calculation; an arbitrary
+    # median taxi measure is not a published metric.
+    return unsupported or bool(re.search(r"\bmedian\b", question, re.I) and not
+                               re.search(r"\b(?:peer median|unusual(?:ly)?|anomal(?:y|ies)|"
+                                         r"outlier)\b", question, re.I))
+
+
+def _month_label(value: str) -> str:
+    year, month = (int(part) for part in value.split("-"))
+    return _period_name((year, month))
+
+
+def _requested_month_label(question: str, context: ConversationContext) -> str | None:
+    mentioned = _question_periods(question)
+    if len(mentioned) != 1:
+        return None
+    year, month = mentioned[0]
+    if year is None and context.month_referent:
+        year = int(context.month_referent[:4])
+    return f"{MONTHS[month - 1]} {year}" if year is not None else MONTHS[month - 1]
+
+
 class AdvancedChatEngine:
     """Extends the existing API without an unbounded planning/agent loop."""
 
@@ -108,6 +162,10 @@ class AdvancedChatEngine:
                ai_used: bool = False) -> dict[str, Any]:
         if context is not None:
             self.sessions.update(session_id, context)
+        elif evidence:
+            # A new analytical answer without an established singular referent
+            # must not leave the previous answer's month or group in focus.
+            self.sessions.update(session_id, ConversationContext())
         return {"answer": answer, "evidence": evidence or [], "session_id": session_id,
                 "ai_used": ai_used, "calculation": calculation}
 
@@ -411,13 +469,24 @@ class AdvancedChatEngine:
                            evidence=[self._evidence("pickup_zone_performance", "trip_count",
                                                     before, (first,)),
                                      self._evidence("pickup_zone_performance", "trip_count",
-                                                    after, (second,))])
+                                                    after, (second,))],
+                           context=ConversationContext(
+                               metric="trip_count",
+                               periods=(f"{first[0]}-{first[1]:02d}",
+                                        f"{second[0]}-{second[1]:02d}"),
+                               zones=(str(before_rows[0]["pickup_location_id"]),),
+                               borough=borough,
+                               comparison_group=(_period_name(first), _period_name(second)),
+                           ))
 
     def _named_zone_total(self, question: str, payload: dict[str, Any],
                           periods: tuple[tuple[int, int], ...],
                           session_id: str) -> dict[str, Any] | None:
         if len(periods) > 1 or not re.search(r"\b(pickups?|zone|area|neighbou?rhood)\b",
                                             question, re.I):
+            return None
+        if (re.search(r"\bborough\b", question, re.I) and not
+                re.search(r"\b(zone|area|neighbou?rhood)\b", question, re.I)):
             return None
         borough = self._zone_scope(question, payload)
         rows = self.source.fetch("pickup_zone_performance", periods[0] if periods else None,
@@ -439,6 +508,7 @@ class AdvancedChatEngine:
         if total is None:
             return self._reply(session_id, f"No published trip total is available for {name}.")
         period_label = _period_name(periods[0]) if periods else "the published months"
+        zone_ids = tuple(sorted({str(row["pickup_location_id"]) for row in selected}))
         return self._reply(session_id,
                            f"{name} recorded {_amount(total, 'trips')} in {period_label}.",
                            calculation="Sum trip_count for the exact approved pickup-zone "
@@ -448,8 +518,132 @@ class AdvancedChatEngine:
                            context=ConversationContext("trip_count",
                                                        tuple(f"{year}-{month:02d}"
                                                              for year, month in periods),
-                                                       tuple(str(row["pickup_location_id"])
-                                                             for row in selected[:1]), borough))
+                                                       zone_ids, borough))
+
+    def _zone_metric_followup(self, question: str, payload: dict[str, Any],
+                              session_id: str,
+                              context: ConversationContext) -> dict[str, Any]:
+        """Retain an answer-backed zone ID for an elliptical metric/period change."""
+        if len(context.zones) != 1:
+            return self._reply(session_id, "Which pickup zone do you mean? The previous "
+                               "answer named more than one zone.")
+        metric = _explicit_metric(question) or context.pending_metric or context.metric
+        if (re.search(r"\b(?:that month|that period|same period)\b", question, re.I)
+                and not _question_periods(question) and context.month_referent is None):
+            return self._reply(session_id, "Which month do you mean for that pickup "
+                               "zone? The previous answer did not establish one month.",
+                               context=replace(context, pending_metric=metric))
+        if metric not in {"trip_count", "total_amount", "tip_amount"}:
+            return self._reply(session_id, "That measure is not published at pickup-zone "
+                               "grain. Ask about zone trips, TLC total amount, or "
+                               "recorded tips.")
+        try:
+            mentioned = (self._resolve_periods(question, payload, self._available_periods())
+                         if _question_periods(question) else ())
+        except AnalyticsError as exc:
+            return self._reply(session_id, str(exc))
+        if len(mentioned) > 1:
+            return self._reply(session_id, "Please name one new month for this pickup-zone "
+                               "follow-up, or ask to compare the previous two months.")
+        if context.dates or context.date_ranges:
+            return self._reply(session_id, "Pickup-zone figures cannot be scoped to the "
+                               "previous daily date or date range in the published marts.")
+        previous = tuple(tuple(int(part) for part in period.split("-"))
+                         for period in context.periods)
+        if mentioned and previous and _COMPARISON.search(question):
+            if len(previous) != 1:
+                return self._reply(session_id, "Which previous month should this zone be "
+                                   "compared with?")
+            selected = (mentioned[0], previous[0])
+        else:
+            selected = mentioned or previous
+        if len(selected) > 2:
+            return self._reply(session_id, "Please narrow this pickup-zone question to "
+                               "one or two months.")
+        rows = self.source.fetch("pickup_zone_performance")
+        zone_rows = [row for row in rows
+                     if str(row["pickup_location_id"]) == context.zones[0]]
+        if not zone_rows:
+            return self._reply(session_id, "That pickup zone has no published rows in "
+                               "the current scope.")
+        named_boroughs = _question_boroughs(question)
+        zone_borough = str(zone_rows[0]["borough"])
+        if named_boroughs and named_boroughs != (zone_borough,):
+            return self._reply(session_id, f"The saved pickup zone belongs to "
+                               f"{zone_borough}; name a new zone for another borough.")
+        name = str(zone_rows[0].get("zone") or f"Zone {context.zones[0]}")
+        # A new zone name must never be interpreted as an elliptical reference
+        # to the previous location ID. Check exact names and distinctive tokens.
+        names = {str(row.get("zone") or "").strip() for row in rows}
+        named = {candidate for candidate in names if candidate and re.search(
+            rf"(?<!\w){re.escape(candidate)}(?!\w)", question, re.I,
+        )}
+        zone_words = {word.casefold() for word in re.findall(
+            r"\b[A-Za-z][A-Za-z/-]{2,}\b", question,
+        ) if word.casefold() not in {
+            "what", "about", "that", "zone", "pickup", "trips", "tips", "recorded",
+            "total", "amount", "revenue", "month", "period", "compare", "with",
+            "from", "citywide", "borough", "and", "for", "were", "january",
+            "february", "march", "april", "may", "june", "july", "august",
+            "september", "october", "november", "december",
+        }}
+        named.update(candidate for candidate in names if candidate and
+                     zone_words.intersection(candidate.casefold().split()))
+        if named and named != {name}:
+            return self._reply(session_id, "That question may name a different pickup "
+                               "zone. Please ask it as a complete question with the "
+                               "zone and month so I do not reuse the previous zone.")
+        periods_to_query = selected or (None,)
+        values = []
+        for period in periods_to_query:
+            scoped = (self._month_rows(zone_rows, period) if period else zone_rows)
+            if not scoped:
+                label = _period_name(period) if period else "the published months"
+                return self._reply(session_id, f"{name} has no published row in {label}.")
+            result = aggregate_metric(scoped, metric)
+            if result.value is None:
+                return self._reply(session_id, f"No usable {result.metric.label.lower()} "
+                                   f"is published for {name} in that period.")
+            values.append((period, result))
+        label = _METRIC_WORDING[metric]
+        if len(values) == 2:
+            baseline, current = values
+            comparison = compare_values(baseline[1], current[1],
+                                        baseline_period=baseline[0],
+                                        current_period=current[0])
+            answer = (f"{name} {label}: {_period_name(baseline[0])}: "
+                      f"{_amount(baseline[1].value, baseline[1].metric.unit)}; "
+                      f"{_period_name(current[0])}: "
+                      f"{_amount(current[1].value, current[1].metric.unit)}. "
+                      f"Change: {_amount(abs(comparison.difference), baseline[1].metric.unit)} "
+                      f"{'more' if comparison.difference >= 0 else 'less'}.")
+            if comparison.percentage_change is not None:
+                answer += f" Percentage change: {_pct(comparison.percentage_change)}."
+            else:
+                answer += " Percentage change is unavailable for this baseline."
+        else:
+            period, result = values[0]
+            period_label = _period_name(period) if period else "the published months"
+            answer = (f"{name} recorded {_amount(result.value, result.metric.unit)} "
+                      f"in {period_label} ({label}).")
+        return self._reply(
+            session_id, answer,
+            calculation="Filter pickup_zone_performance to the exact saved "
+            "pickup_location_id, then aggregate the requested published metric "
+            "within the named source month(s).",
+            evidence=[self._evidence("pickup_zone_performance", metric, item.value,
+                                     (period,) if period else ())
+                      for period, item in values],
+            context=ConversationContext(
+                metric=metric,
+                periods=tuple(f"{period[0]}-{period[1]:02d}"
+                              for period in selected),
+                zones=context.zones,
+                borough=zone_borough,
+                comparison_group=tuple(_period_name(period) for period in selected)
+                if len(selected) == 2 else (),
+            ),
+        )
 
     def _daily_analysis(self, question: str, periods: tuple[tuple[int, int], ...],
                         session_id: str, mode: str) -> dict[str, Any]:
@@ -486,7 +680,13 @@ class AdvancedChatEngine:
                                evidence=[self._evidence("daily_trip_metrics", metric,
                                                         pattern.weekday_daily_average, periods),
                                          self._evidence("daily_trip_metrics", metric,
-                                                        pattern.weekend_daily_average, periods)])
+                                                        pattern.weekend_daily_average, periods)],
+                               context=ConversationContext(
+                                   metric=metric,
+                                   periods=tuple(f"{year}-{month:02d}"
+                                                 for year, month in periods),
+                                   comparison_group=("weekday", "weekend"),
+                               ))
         result = detect_anomalies(rows, metric)
         low = bool(re.search(r"\b(low|lower|drop|fewest)\b", question, re.I))
         findings = [item for item in result.anomalies if not low or item.difference < 0]
@@ -501,6 +701,10 @@ class AdvancedChatEngine:
                  f"vs {_amount(item.baseline, item.metric.unit)} peer median "
                  f"({_pct(item.percentage_change)})"
                  for item in findings[:5]]
+        shown = findings[:5]
+        shown_months = tuple(dict.fromkeys(
+            f"{item.pickup_date.year}-{item.pickup_date.month:02d}" for item in shown
+        ))
         return self._reply(session_id, "Unusual observed days: " + "; ".join(parts)
                            + ". This identifies a pattern, not its cause.",
                            calculation="Compare each valid pickup date with other observed dates "
@@ -509,7 +713,14 @@ class AdvancedChatEngine:
                            + " ".join(result.caveats),
                            evidence=[self._evidence("daily_trip_metrics", metric,
                                                     item.observed, periods)
-                                     for item in findings[:5]])
+                                     for item in shown],
+                           context=ConversationContext(
+                               metric=metric,
+                               periods=shown_months,
+                               dates=tuple(item.pickup_date.isoformat() for item in shown),
+                               comparison_group=tuple(item.pickup_date.isoformat()
+                                                      for item in shown),
+                           ))
 
     def _monthly_analysis(self, question: str, payload: dict[str, Any],
                           periods: tuple[tuple[int, int], ...], session_id: str) -> dict[str, Any]:
@@ -571,6 +782,8 @@ class AdvancedChatEngine:
                                    periods=(f"{first[0][0]}-{first[0][1]:02d}",
                                             f"{second[0][0]}-{second[0][1]:02d}"),
                                    borough=borough,
+                                   comparison_group=(_period_name(first[0]),
+                                                     _period_name(second[0])),
                                ))
         if metric in {"trip_count", "total_amount", "tip_amount"} and not borough:
             trend = monthly_trend(rows, metric)
@@ -596,7 +809,13 @@ class AdvancedChatEngine:
                            + "; ".join(details) + ".",
                            calculation=method + " ".join(caveats),
                            evidence=[self._evidence(mart, metric, value.value, (period,))
-                                     for period, value in points])
+                                     for period, value in points],
+                           context=ConversationContext(
+                               metric=metric,
+                               periods=tuple(f"{year}-{month:02d}"
+                                             for (year, month), _ in points),
+                               borough=borough,
+                           ))
 
     def _dynamic_sql(self, question: str, session_id: str) -> dict[str, Any] | None:
         """Use a local model for *proposals* and a separate validated query executor.
@@ -765,7 +984,14 @@ class AdvancedChatEngine:
                            evidence=[self._evidence("daily_trip_metrics", "trip_count",
                                                     before, (prior,)),
                                      self._evidence("daily_trip_metrics", "trip_count",
-                                                    after, (current,))])
+                                                    after, (current,))],
+                           context=ConversationContext(
+                               metric="trip_count",
+                               periods=(f"{prior[0]}-{prior[1]:02d}",
+                                        f"{current[0]}-{current[1]:02d}"),
+                               comparison_group=(_period_name(prior),
+                                                 _period_name(current)),
+                           ))
 
     def _date_rank(self, question: str, periods: tuple[tuple[int, int], ...],
                    session_id: str) -> dict[str, Any]:
@@ -792,7 +1018,12 @@ class AdvancedChatEngine:
                            calculation="Sum trip_count by valid pickup_date; exclude dates "
                            "outside their published source month before ranking.",
                            evidence=[self._evidence("daily_trip_metrics", "trip_count",
-                                                    total, ((day.year, day.month),))])
+                                                    total, ((day.year, day.month),))],
+                           context=ConversationContext(
+                               metric="trip_count",
+                               periods=(f"{day.year}-{day.month:02d}",),
+                               dates=(day.isoformat(),),
+                           ))
 
     def _date_range_analysis(self, question: str, session_id: str,
                              dates: tuple[date, ...]) -> dict[str, Any]:
@@ -850,6 +1081,18 @@ class AdvancedChatEngine:
             "Missing dates are not silently treated as zero trips.",
             evidence=[self._evidence("daily_trip_metrics", metric, item[2].value)
                       for item in values],
+            context=ConversationContext(
+                metric=metric,
+                periods=tuple(dict.fromkeys(
+                    f"{day.year}-{day.month:02d}"
+                    for start, end in ranges for day in (start, end)
+                )),
+                date_ranges=tuple((start.isoformat(), end.isoformat())
+                                  for start, end in ranges),
+                comparison_group=tuple(f"{start.isoformat()} to {end.isoformat()}"
+                                       for start, end in ranges)
+                if len(ranges) == 2 else (),
+            ),
         )
 
     def _month_leader_tips(self, session_id: str) -> dict[str, Any]:
@@ -900,7 +1143,8 @@ class AdvancedChatEngine:
                            calculation="Sum trip_count by pickup_hour, select the highest "
                            "hour, and divide its trips by all published hourly trips.",
                            evidence=[self._evidence("hourly_demand", "trip_count", count),
-                                     self._evidence("hourly_demand", "trip_count", total)])
+                                     self._evidence("hourly_demand", "trip_count", total)],
+                           context=ConversationContext(metric="trip_count"))
 
     def _borough_tip_gap(self, period: tuple[int, int],
                          session_id: str) -> dict[str, Any]:
@@ -927,55 +1171,152 @@ class AdvancedChatEngine:
                            "rank the two highest, then subtract runner-up from leader.",
                            evidence=[self._evidence("pickup_zone_performance", "tip_amount",
                                                     amount, (period,))
-                                     for _, amount in ranked[:2]])
+                                     for _, amount in ranked[:2]],
+                           context=ConversationContext(
+                               metric="tip_amount",
+                               periods=(f"{period[0]}-{period[1]:02d}",),
+                               boroughs=(leader[0], runner[0]),
+                               comparison_group=(leader[0], runner[0]),
+                           ))
 
     @staticmethod
     def _rewrite_followup(question: str, context: ConversationContext) -> str | None:
-        """Resolve only a few explicit references to verified prior entities."""
+        """Ground elliptical questions in structured, answer-backed referents.
+
+        A multiple-month answer deliberately has no singular month focus.  A
+        named comparison month is the baseline and the focused month is the
+        subject, so the answer can state an unambiguous signed change.
+        """
         q = question.casefold().strip()
+        named_month = _requested_month_label(question, context)
+        borough_suffix = (f" in {context.borough}"
+                          if context.borough and not _question_boroughs(question)
+                          and not re.search(r"\b(?:citywide|all boroughs|whole city)\b", q)
+                          else "")
+        if (context.pending_metric and named_month and
+                re.fullmatch(r"\s*(?:20\d{2}-\d{2}|[a-z]+(?:\s+20\d{2})?)\??\s*",
+                             question, re.I)):
+            phrase = _METRIC_WORDING.get(context.pending_metric)
+            return f"What were {phrase} in {named_month}{borough_suffix}?" if phrase else None
         if "that month" in q:
-            if len(context.periods) != 1:
+            if context.month_referent is None:
                 return None
-            return question + f" in {context.periods[0]}"
-        if re.search(r"\bwhat about\s+(?:20\d{2}-\d{2}|[a-z]+\s+20\d{2})", q):
+            suffix = f" in {_month_label(context.month_referent)}"
+            suffix += borough_suffix
+            return question + suffix
+        if "that borough" in q:
+            if context.borough is None:
+                return None
+            if len(context.periods) > 1 and not _question_periods(question):
+                return None
+            suffix = f" in {context.borough}"
+            if context.month_referent and not _question_periods(question):
+                suffix += f" in {_month_label(context.month_referent)}"
+            return question + suffix
+        if "that period" in q or "same period" in q:
+            if len(context.date_ranges) == 1:
+                start, end = context.date_ranges[0]
+                return question + f" from {start} to {end}"
+            if context.month_referent:
+                return question + f" in {_month_label(context.month_referent)}" + borough_suffix
+            return None
+        if (re.search(r"\b(?:that|it)\b", q) and
+                re.search(r"\b(?:compare|versus|vs\.?)\b", q) and named_month):
+            metric = _explicit_metric(question) or context.metric
+            phrase = _METRIC_WORDING.get(metric or "")
+            if context.month_referent is None or phrase is None:
+                return None
+            return (f"How did {phrase} change from {named_month} "
+                    f"to {_month_label(context.month_referent)}{borough_suffix}?")
+        if re.search(r"\b(?:what|how) about\b", q) and named_month:
             if len(context.boroughs) == 2 and context.metric == "trip_count":
                 return (f"Compare {context.boroughs[0]} and {context.boroughs[1]} "
                         f"trips in {question.split('about', 1)[1].strip().rstrip('?')}.")
+            phrase = _METRIC_WORDING.get(context.metric or "")
+            if named_month and phrase:
+                return f"What were {phrase} in {named_month}{borough_suffix}?"
+            return None
         if "what share was that" in q:
-            if context.payment_type and len(context.periods) == 1:
-                return (f"What share of {context.periods[0]} trips used "
+            if context.payment_type and context.month_referent:
+                return (f"What share of {_month_label(context.month_referent)} trips used "
                         f"{context.payment_type}?")
-        if re.search(r"\band for (?:recorded )?tips\b", q):
-            if len(context.periods) == 2:
-                return (f"How did recorded tips change from {context.periods[0]} "
-                        f"to {context.periods[1]}?")
+            return None
+        if re.search(r"\band for\b", q):
+            metric = _explicit_metric(question)
+            phrase = _METRIC_WORDING.get(metric or "")
+            if phrase is None:
+                return None
+            if len(context.date_ranges) == 2:
+                first, second = context.date_ranges
+                return (f"Compare {phrase} from {first[0]} to {first[1]} "
+                        f"and from {second[0]} to {second[1]}?")
+            if len(context.date_ranges) == 1:
+                start, end = context.date_ranges[0]
+                return f"What were {phrase} from {start} to {end}?"
+            if len(context.periods) == 2 and context.comparison_group:
+                return (f"How did {phrase} change from "
+                        f"{_month_label(context.periods[0])} to "
+                        f"{_month_label(context.periods[1])}{borough_suffix}?")
+            if context.month_referent:
+                return (f"What were {phrase} in "
+                        f"{_month_label(context.month_referent)}{borough_suffix}?")
+            return None
         return question
 
     def _remember_legacy(self, question: str, payload: dict[str, Any],
                          available: tuple[tuple[int, int], ...],
                          response: dict[str, Any], session_id: str,
                          prior: ConversationContext) -> None:
-        """Persist resolved references, never the question/answer or arbitrary model text."""
+        """Persist typed references from validated evidence, not answer wording."""
         if not response.get("evidence"):
+            self.sessions.update(session_id, ConversationContext())
             return
         periods = self._resolve_periods(question, payload, available)
         if not periods and _intent(question) == "peak_month":
-            named = _question_periods(str(response.get("answer", "")))
-            if len(named) == 1 and named[0][0] is not None:
-                periods = ((named[0][0], named[0][1]),)
+            evidence_metric = {"trip_count": "trip_count",
+                               "tip_amount": "total_tip_amount",
+                               "total_amount": "total_revenue"}.get(_metric(question))
+            ranked = []
+            if evidence_metric:
+                for item in response["evidence"]:
+                    label = str(item.get("metric", ""))
+                    suffix = " " + evidence_metric
+                    if not label.endswith(suffix):
+                        continue
+                    named = _question_periods(label[:-len(suffix)])
+                    if len(named) == 1 and named[0][0] is not None:
+                        ranked.append((Decimal(str(item["value"])), named[0]))
+            if ranked:
+                low = bool(re.search(r"\b(fewest|least|lowest|bottom)\b", question, re.I))
+                winning = (min(ranked, key=lambda item: (item[0], item[1])) if low else
+                           max(ranked, key=lambda item: (item[0], -item[1][0], -item[1][1])))
+                periods = (winning[1],)
         boroughs = _question_boroughs(question)
         payment = None
-        if re.search(r"\bcredit card\b", question, re.I):
+        winners = [item for item in response["evidence"]
+                   if item.get("metric") == "top_pickup_borough"]
+        winner_borough = _borough(str(winners[0]["value"])) if winners else None
+        payment_items = [item for item in response["evidence"]
+                         if item.get("metric") == "payment_type"]
+        if payment_items:
+            payment = PAYMENTS.get(int(payment_items[0]["value"]))
+        elif re.search(r"\bcredit card\b", question, re.I):
             payment = "credit card"
         elif re.search(r"\bcash\b", question, re.I):
             payment = "cash"
+        scope_borough = (boroughs[0] if len(boroughs) == 1 else
+                         winner_borough or _borough(payload.get("borough")))
+        saved_periods = tuple(f"{year}-{month:02d}" for year, month in periods)
         context = ConversationContext(
             metric=_metric(question),
-            periods=tuple(f"{year}-{month:02d}" for year, month in periods),
-            zones=prior.zones if "zone" not in question.casefold() else (),
-            borough=boroughs[0] if len(boroughs) == 1 else _borough(payload.get("borough")),
+            periods=saved_periods,
+            zones=(),  # Legacy answers do not establish an exact zone-ID scope.
+            borough=scope_borough,
             boroughs=boroughs if len(boroughs) == 2 else (),
             payment_type=payment,
+            comparison_group=(tuple(_month_label(value) for value in saved_periods)
+                              if len(saved_periods) == 2 and _COMPARISON.search(question)
+                              else boroughs if len(boroughs) == 2 else ()),
         )
         self.sessions.update(session_id, context)
 
@@ -1009,6 +1350,11 @@ class AdvancedChatEngine:
         if re.search(r"\b(?:forecast|predict|prediction)\b", q):
             return self._reply(session_id, "I cannot forecast or predict future taxi "
                                "activity from these published aggregates.")
+        if _unsupported_metric(question):
+            return self._reply(session_id, "That measure is not published in the "
+                               "chat marts. Ask about trips, TLC total amount, "
+                               "recorded tips, or a supported fare/distance aggregate.",
+                               context=ConversationContext())
         if re.search(r"\b(?:why|caused?|reason)\b", q):
             return self._reply(session_id, "I cannot determine causes from these "
                                "aggregates; I can describe observed changes only.")
@@ -1019,12 +1365,39 @@ class AdvancedChatEngine:
         if years and not _question_periods(question) and any(year != 2024 for year in years):
             return self._reply(session_id, "Data for that year is not available in "
                                "this January–June 2024 report.")
-        if re.search(r"\b(that month|what about|what share was that|and for)\b", q):
+        zone_followup = bool(re.search(
+            r"\b(?:and for|what about|how about|that zone|that month|"
+            r"that period|same period)\b", q,
+        ) or (re.search(r"\b(?:that|it)\b", q) and
+              re.search(r"\b(?:compare|versus|vs\.?)\b", q)) or
+            (context.pending_metric and _question_periods(question)))
+        if zone_followup and context.zones and not re.search(
+            r"\b(?:citywide|all boroughs|whole city)\b", q,
+        ):
+            return self._zone_metric_followup(question, payload, session_id, context)
+        if "that zone" in q and not context.zones:
+            return self._reply(session_id, "Which pickup zone do you mean? Name one "
+                               "published zone first.")
+        if (re.search(r"\b(that month|that borough|that period|same period|"
+                      r"what about|how about|what share was that|and for)\b", q)
+                or (re.search(r"\b(?:that|it)\b", q) and
+                    re.search(r"\b(?:compare|versus|vs\.?)\b", q))
+                or (context.pending_metric and _question_periods(question))):
             rewritten = self._rewrite_followup(question, context)
             if rewritten is None:
+                if context.ambiguous_months and re.search(r"\b(?:that month|that period|"
+                                                          r"same period)\b", q):
+                    choices = ", ".join(_month_label(value)
+                                        for value in context.ambiguous_months)
+                    self.sessions.update(session_id, replace(
+                        context, pending_metric=_explicit_metric(question) or context.metric,
+                    ))
+                    return self._reply(session_id, "That month is ambiguous because the "
+                                       f"previous answer involved {choices}. Which one "
+                                       "do you mean?")
                 return self._reply(session_id, "Please clarify the month, metric, or "
-                                   "group you want to compare; no matching context is "
-                                   "available in this chat.")
+                                   "group you want to compare; no single matching "
+                                   "referent is available in this chat.")
             question = rewritten
             q = question.casefold()
         try:

@@ -1,6 +1,6 @@
 # NYC Taxi Lakehouse
 
-A local batch lakehouse for official [NYC TLC Yellow Taxi trips](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page). It turns monthly source files into quality-checked, analytics-ready data: PySpark preserves and validates the trips, Iceberg on MinIO provides a transactional lakehouse publication path, and PostgreSQL serves compact marts to Superset. Airflow coordinates the stages; automated tests and GitHub Actions check failure handling and correctness. No paid cloud account is required.
+A local batch lakehouse for official [NYC TLC Yellow Taxi trips](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page). It turns monthly source files into quality-checked, analytics-ready data: PySpark validates the trips, PostgreSQL serves compact marts, and Superset and Power BI provide two ways to explore them. Airflow coordinates the batch stages; an optional Iceberg/MinIO path adds table snapshots. An in-report, local data assistant answers supported follow-up questions from published aggregates. No paid cloud account is required.
 
 ## What this project demonstrates
 
@@ -10,8 +10,8 @@ A local batch lakehouse for official [NYC TLC Yellow Taxi trips](https://www.nyc
 | Data contracts and quality | Metadata-only source schema gate before Bronze; row-level Silver rules and quarantine after Bronze |
 | Lakehouse storage | Local Parquet by default; optional period-scoped Iceberg snapshots in MinIO |
 | Operational reliability | Safe partial downloads and partition promotion, task failure propagation, reconciliation, transactional serving publication |
-| Analytics | Five Gold marts, PostgreSQL serving, 13-chart Superset dashboard |
-| Validation | Local 155-test full regression, four GitHub Actions CI jobs, measured performance experiments |
+| Analytics | Five Gold marts, PostgreSQL serving, 13-chart Superset dashboard, three-page Power BI report and local data chat |
+| Validation | Historical 155-test full pipeline regression, five GitHub Actions CI jobs, measured performance experiments, focused chat evaluation |
 
 ## Architecture
 
@@ -29,12 +29,17 @@ flowchart TB
     ZONE --> PUB
     GOLD --> SERVE["PostgreSQL: five serving marts"]
     ZONE --> SERVE --> BI["Superset dashboard"]
+    SERVE --> CSV["Aggregate CSV exports"] --> PBI["Power BI Desktop report"]
+    CSV --> API["Local read-only chat API"]
+    PBI --> UI["Ask City Pulse visual"] --> API
+    API --> CALC["Validated calculations + session context"]
+    MODEL["Optional local Ollama"] -. supported intent .-> API
     AIR["Airflow: monthly tasks, retries, reconciliation"] -. orchestrates .-> ING
     AIR -. orchestrates .-> SI
     AIR -. orchestrates .-> SERVE
 ```
 
-Raw retains downloaded files; Bronze preserves source business columns and adds lineage; Silver creates valid and quarantined partitions; Gold aggregates **only valid Silver**. The optional Iceberg path publishes validated local outputs to MinIO—MinIO stores objects while Iceberg manages table snapshots. Airflow and the CLI orchestrator control work; neither is a business-data store. The five Gold marts are daily trips, hourly demand, pickup-location performance, payment-type summary, and zone-enriched pickup performance. The complete [stage-by-stage record](docs/implementation-history.md) explains how the system evolved.
+Raw retains downloaded files; Bronze preserves source business columns and adds lineage; Silver creates valid and quarantined partitions; Gold aggregates **only valid Silver**. The optional Iceberg path publishes validated local outputs to MinIO—MinIO stores objects while Iceberg manages table snapshots. Airflow and the CLI orchestrator control work; neither is a business-data store. The five Gold marts are daily trips, hourly demand, pickup-location performance, payment-type summary, and zone-enriched pickup performance. Power BI and the normal chat mode use local aggregate CSV exports; questions do not alter charts. Ollama may interpret wording but fixed, validated code calculates the numbers. A separate, **opt-in** protected mode accepts only SQL proposals that pass AST validation and compilation before a dedicated read-only PostgreSQL account executes them; it is not part of the normal CSV launcher. The complete [stage-by-stage record](docs/implementation-history.md) explains how the system evolved.
 
 ## Dataset and scale
 
@@ -74,9 +79,9 @@ Page 1 — overview and demand, with the Ask City Pulse button at the bottom rig
 
 ![Power BI City Pulse overview with Ask City Pulse button](docs/images/powerbi-city-pulse-overview.png)
 
-Page 1 — chat popup opened from that button. In this January–June 2024 snapshot, it answers a question about June cash payments; asking does not change the report's charts or filters:
+Page 1 — two consecutive views of the same chat popup: the left shows the busiest-month and tips follow-up; the right shows the April comparison. Questions do not change the report's charts or filters, and **New chat** clears conversational context:
 
-![Ask City Pulse in-report chat answering a June cash-share question](docs/images/powerbi-city-pulse-chat.png)
+![Ask City Pulse in-report chat with context-aware month and tips follow-ups](docs/images/powerbi-city-pulse-chat.png)
 
 Page 2 — Boroughs & Zones, pickup geography:
 
@@ -86,7 +91,7 @@ Page 3 — Fare & Payment, trip amounts and payment mix:
 
 ![Power BI fares and payment methods](docs/images/powerbi-city-pulse-fares.png)
 
-The report imports four **aggregated** serving-mart CSV exports. CSVs, imported-data cache, and local settings are deliberately excluded from Git; a fresh clone needs a local export and refresh before the visuals show data. The one-click [Open City Pulse launcher](powerbi/Open%20City%20Pulse.cmd) creates an ignored local working copy, opens it, and starts the in-report chat without changing the portable project source. The assistant now handles bounded month/date/zone comparisons, observed trends, cautious anomaly flags, and session-scoped follow-ups, with an optional calculation disclosure; every figure comes from published marts. A separate opt-in protected mode can validate and execute a narrow local-model SQL proposal through a dedicated read-only PostgreSQL role. It is **not** enabled by the normal code-free CSV launcher. See the [Power BI setup and limitations](powerbi/README.md), [chat service guide](chatbot/README.md), and [Phase 2 validation](docs/phase2-validation-2026-10-11.md).
+The report imports four **aggregated** serving-mart CSV exports. CSVs, imported-data cache, and local settings are deliberately excluded from Git; a fresh clone needs a local export and refresh before the visuals show data. The one-click [Open City Pulse launcher](powerbi/Open%20City%20Pulse.cmd) creates an ignored local working copy, opens it, and starts the in-report chat without changing the portable project source. The assistant handles bounded month/date-range, pickup-zone, borough, and payment-share comparisons; weekday/weekend patterns; cautious anomaly flags; and multi-step follow-ups. It asks for clarification when a referent is ambiguous, and **New chat** resets the session. An optional **How this was calculated** disclosure explains the mart-backed calculation without a distracting source list. A separate opt-in protected mode can validate and execute a narrow local-model SQL proposal through a dedicated read-only PostgreSQL role. It is **not** enabled by the normal code-free CSV launcher. See the [Power BI setup and limitations](powerbi/README.md), [chat service guide](chatbot/README.md), [context-validation record](docs/chat-context-validation-2026-10-11.md), and [Phase 2 validation](docs/phase2-validation-2026-10-11.md).
 
 ## Performance engineering
 
@@ -101,12 +106,12 @@ The complete local Docker regression passed **155 tests** after the Phase 14 cha
 | Job | Gate |
 | --- | --- |
 | Quality | Ruff, workflow YAML, Bash syntax, Compose configuration, Git hygiene and whitespace |
-| Fast Tests | Service-independent unit/contract/dashboard-definition tests and the 60-case offline chat evaluation on Python 3.11 and Java 17 |
+| Fast Tests | Service-independent unit/contract/dashboard-definition tests and the offline chat evaluation on Python 3.11 and Java 17 |
 | Power BI Visual | Installs locked visual dependencies, then typechecks and lints the custom chat visual |
 | Docker Build | Builds the pipeline image; does not publish it |
 | Integration Tests | Fresh MinIO/PostgreSQL, real Airflow DAG, Iceberg and serving tests without historical TLC data |
 
-CI is **validation, not deployment**. Full-data benchmarks, two heavy tests, Superset bootstrap, and browser visual checks are local/manual rather than PR gates. The [latest completed CI evidence before this documentation update](https://github.com/harshitha-108/nyc-taxi-lakehouse/actions/runs/35905605539) passed the previous four-job workflow; the new Power BI Visual job has not run remotely for these unpushed changes. The [current local issue-validation record](docs/phase1-validation-2026-10-10.md) separates checks run here from historical CI results.
+CI is **validation, not deployment**. Full-data benchmarks, two heavy tests, Superset bootstrap, and browser visual checks are local/manual rather than PR gates. The historical [Phase 14 CI run](https://github.com/harshitha-108/nyc-taxi-lakehouse/actions/runs/35905605539) passed the earlier four-job workflow; check [GitHub Actions](https://github.com/harshitha-108/nyc-taxi-lakehouse/actions) for the current five-job result. The latest local context check recorded **105 passing chatbot tests** and **63 pass, 0 fail, 1 needs_review** in the offline evaluation; that anomaly case awaits manual interpretation, not a passed assertion. The [issue-validation](docs/phase1-validation-2026-10-10.md) and [context-validation](docs/chat-context-validation-2026-10-11.md) records separate local checks from historical CI evidence.
 
 ## Run locally
 
@@ -121,7 +126,7 @@ Copy-Item .env.example .env
 docker compose build pipeline
 docker compose run --rm --no-deps pipeline python --version
 docker compose run --rm --no-deps pipeline pytest -p no:cacheprovider -m "not docker and not heavy" -k "not hygiene_checks_git_index_instead_of_local_powerbi_copy" -q
-docker compose run --rm --no-deps pipeline ruff check src tests airflow scripts
+docker compose run --rm --no-deps pipeline ruff check src tests airflow scripts chatbot
 python scripts/check_repository_hygiene.py
 ```
 

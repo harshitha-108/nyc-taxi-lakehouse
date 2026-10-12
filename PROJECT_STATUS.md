@@ -9,11 +9,14 @@ The historical validation records below describe the runs performed at each mile
 claims that every later feature passed the old Phase 14 test run. The current issue-validation gate,
 including environment-dependent checks and the corrected public GitHub About description, is in
 [`docs/phase1-validation-2026-10-10.md`](docs/phase1-validation-2026-10-10.md).
-The bounded Ask City Pulse upgrade is described separately in
-[`docs/phase2-validation-2026-10-11.md`](docs/phase2-validation-2026-10-11.md): its offline
-synthetic evaluation, static checks, and an isolated PostgreSQL reader smoke are complete,
-while the user's running PostgreSQL/Power BI Desktop interaction still requires explicit
-local validation. It has not been pushed.
+The bounded Ask City Pulse upgrade is described in
+[`docs/phase2-validation-2026-10-11.md`](docs/phase2-validation-2026-10-11.md). The subsequent
+[`conversation-context validation`](docs/chat-context-validation-2026-10-11.md) records **105 passing
+chatbot tests** and an offline evaluation of **63 pass, 0 fail, 1 needs_review**. The remaining
+anomaly case requires human interpretation. A local Power BI Desktop check verified context across
+month → tips → comparison questions and confirmed that **New chat** resets the session; it is a
+manual check, not a hosted CI gate. The protected PostgreSQL SQL path has separate, narrower
+validation and is not the mode used in that Power BI demonstration.
 
 ## Completed
 
@@ -59,7 +62,7 @@ local validation. It has not been pushed.
 - SQLite JDBC Iceberg catalog, eight period-partitioned tables, migration/inspection/smoke CLIs
 - January–June historical migration with per-period quality and Gold reconciliations
 - Real MinIO/Iceberg snapshot, overwrite, time-travel, and breaking-schema-gate integration tests
-- Airflow monthly control-plane DAG with eight explicit stage tasks and stage-level adapters
+- Airflow monthly control-plane DAG with nine current stage tasks and stage-level adapters
 - LocalExecutor with a separate PostgreSQL metadata database, Docker health checks, and idempotent init
 - Paused-by-default schedule, manual period override, bounded backfill dry-run, and task-level retries
 - Isolated real Airflow DAG-run tests for success, optional skip, and breaking-schema blocking
@@ -77,8 +80,8 @@ local validation. It has not been pushed.
 - Airflow task-state failure matrix and dashboard definition preflight/regression tests
 - GitHub Actions `CI` workflow with separate Quality, Fast Tests, Integration Tests, and Docker Build
   jobs; push-to-main and pull-request triggers, branch/PR concurrency, and read-only permissions
-- Added Power BI Visual CI job for locked-dependency TypeScript typecheck and ESLint; it has passed
-  locally but has not yet run on GitHub for these unpushed changes
+- Added a Power BI Visual CI job for locked-dependency TypeScript typecheck and ESLint; its remote
+  status should be checked on the current GitHub Actions run rather than inferred from local checks
 - Explicit pytest `integration`, `docker`, and `heavy` markers, plus a tracked-file hygiene guard
 - Fresh-run CI service configuration, MinIO/PostgreSQL health-gated integration, and failure diagnostics
 - Reproducible local January 2024 performance harness with Spark plan, shuffle, file-layout,
@@ -114,6 +117,13 @@ exports into a three-page Desktop report; it is not a Power BI Service deploymen
 Ask City Pulse visual calls a loopback-only API that answers from read-only published aggregates.
 Optional local Ollama helps interpret wording; deterministic code calculates the numeric answer.
 The normal launcher uses code-free CSV mode, which is appropriate only for this public dataset.
+The assistant supports bounded month/date-range, borough/zone and payment-share comparisons,
+weekday/weekend patterns, cautious anomaly flags, and multi-step questions. Its session state stores
+validated metric, period, entity, and comparison referents; ambiguous follow-ups request clarification,
+and **New chat** clears the context. The optional **How this was calculated** disclosure explains
+the mart-backed result without displaying a source list. Chat questions do not alter Power BI charts.
+Protected dynamic SQL is a distinct opt-in mode: a local-model proposal is parsed, constrained,
+recompiled, and executed through a dedicated read-only PostgreSQL role only when configured.
 dbt is not implemented.
 GitHub Actions now checks the repository and image build on every main push and pull request. Its
 integration job starts fresh MinIO/PostgreSQL services without launching Airflow scheduler/webserver
@@ -490,8 +500,9 @@ proposals over approved marts with a separate reader role; it is not arbitrary S
 analysis and is disabled in the normal code-free launcher. The report itself is not a deployed service and a fresh
 clone needs local exports and a report refresh. Code-free CSV mode can be queried by other local
 sandboxed pages while running, so it must not be used with sensitive datasets. Power BI UI
-interaction and an in-report visual check are manual, not asserted by backend tests or CI. An
-existing ignored local report copy does not automatically receive a newly bundled visual.
+interaction and an in-report visual check were performed manually for the conversational-context
+path; backend tests and CI do not automate Power BI Desktop. An existing ignored local report copy
+does not automatically receive a newly bundled visual.
 
 ## Architecture Decisions
 
@@ -576,7 +587,7 @@ existing ignored local report copy does not automatically receive a newly bundle
 ## Next work
 
 Before claiming the optional protected SQL mode as end-to-end verified, provision the dedicated
-reader in a local PostgreSQL instance, test a validated query through that account, and visually
-inspect the new chat bundle in a disposable Power BI Desktop copy. Rerun hosted CI after an
-explicitly authorised push. Potential extensions such as Kafka/CDC, dbt, a production-grade catalog, and
+reader in a local PostgreSQL instance and test a validated query through that account. Check hosted
+CI after the next push; local tests alone are not remote verification. Potential extensions such as
+Kafka/CDC, dbt, a production-grade catalog, and
 cloud deployment remain unimplemented; none are required to run the current local batch pipeline.

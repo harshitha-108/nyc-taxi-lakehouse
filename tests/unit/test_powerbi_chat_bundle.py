@@ -27,6 +27,7 @@ class PowerBiChatBundleTests(unittest.TestCase):
         self.assertIn("session_id", script)
         self.assertIn("calculation", script)
         self.assertIn("reset", script)
+        self.assertIn("New chat", script)
 
 
 if __name__ == "__main__":

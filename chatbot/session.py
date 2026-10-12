@@ -15,7 +15,13 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ConversationContext:
-    """The minimum context needed to resolve a follow-up such as "they"."""
+    """Validated answer referents, never a transcript or guessed last words.
+
+    ``periods`` contains the months actually in the preceding answer.  Exactly
+    one can resolve "that month"; two or more deliberately remain ambiguous.
+    Dates and ranges retain their own grain so a daily answer cannot silently
+    borrow an older monthly comparison.
+    """
 
     metric: str | None = None
     periods: tuple[str, ...] = ()
@@ -23,6 +29,21 @@ class ConversationContext:
     borough: str | None = None
     boroughs: tuple[str, ...] = ()
     payment_type: str | None = None
+    dates: tuple[str, ...] = ()
+    date_ranges: tuple[tuple[str, str], ...] = ()
+    comparison_group: tuple[str, ...] = ()
+    pending_metric: str | None = None
+
+    @property
+    def month_referent(self) -> str | None:
+        """Only a unique, answer-backed month is safe for a singular pronoun."""
+        if self.dates or self.date_ranges:
+            return None  # Do not silently turn a day or date range into a whole month.
+        return self.periods[0] if len(self.periods) == 1 else None
+
+    @property
+    def ambiguous_months(self) -> tuple[str, ...]:
+        return self.periods if len(self.periods) > 1 else ()
 
 
 class SessionStore:

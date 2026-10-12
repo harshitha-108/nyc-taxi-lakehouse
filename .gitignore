@@ -55,3 +55,18 @@ Thumbs.db
 **/.pbi/cache.abf
 # Private, working PBIP copy created by the local City Pulse launcher
 /powerbi/.local/
+
+# Reproducible visual build artefacts and local dependency caches
+**/node_modules/
+**/.pnpm-store/
+**/.tmp/
+*.pbiviz
+webpack.statistics*.html
+
+# Local demo media, temporary files, and report backups
+/LinkedIn_Media/
+*.mp4
+*.mov
+*.webm
+*.tmp
+*.bak
